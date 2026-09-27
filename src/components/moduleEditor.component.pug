@@ -1,0 +1,39 @@
+.bc-editor
+    .bc-editor-header
+        h4.bc-key-name {{ key }}
+        .bc-badges
+            span.bc-badge.shared(*ngIf='keyInfo && keyInfo.declarers.length > 1',
+                [title]='keyInfo.declarers.join(", ")') {{ t.t("betterConfiger.nav.shared") }}
+            span.bc-badge.sensitive(*ngIf='keyInfo && keyInfo.sensitive') {{ t.t("betterConfiger.nav.sensitive") }}
+            span.bc-badge.orphan(*ngIf='keyInfo && keyInfo.orphan') ⚠
+        .bc-editor-actions
+            button.btn.btn-secondary.btn-sm((click)='exportModule()') {{ t.t("betterConfiger.editor.export") }}
+    .bc-warnings
+        .bc-warning.restart(*ngIf='showRestartHint') {{ t.t("betterConfiger.warn.restart") }}
+        .bc-warning.profiles(*ngIf='showProfilesWarning') {{ t.t("betterConfiger.warn.profiles") }}
+        .bc-warning.sensitive(*ngIf='keyInfo && keyInfo.sensitive') {{ t.t("betterConfiger.warn.sensitive") }}
+        .bc-warning.orphan(*ngIf='keyInfo && keyInfo.orphan') {{ t.t("betterConfiger.warn.orphan") }}
+    ul.nav.nav-tabs
+        li.nav-item
+            a.nav-link([class.active]="activeTab === 'current'", (click)="activeTab = 'current'")
+                | {{ t.t("betterConfiger.editor.current") }}
+        li.nav-item
+            a.nav-link([class.active]="activeTab === 'defaults'", (click)="activeTab = 'defaults'")
+                | {{ t.t("betterConfiger.editor.defaults") }}
+    textarea.form-control.bc-yaml(
+        [ngModel]='editorText',
+        (ngModelChange)='onEdit($event)',
+        [readonly]="activeTab !== 'current'",
+        spellcheck='false')
+    .bc-notset-hint(*ngIf="activeTab === 'current' && notSet && !dirty") {{ t.t("betterConfiger.editor.notSet") }}
+    .bc-status
+        .bc-validation
+            span.text-success(*ngIf="activeTab === 'current' && !hasError && text.trim()") ✓ {{ t.t("betterConfiger.editor.valid") }}
+            span.text-danger(*ngIf="activeTab === 'current' && hasError") ✗ {{ t.t("betterConfiger.editor.invalid") }}: {{ yamlError }}
+        .bc-save-actions
+            button.btn.btn-primary.btn-sm(
+                [disabled]='!dirty || hasError || saving',
+                (click)='save()') {{ t.t("betterConfiger.editor.save") }}
+            button.btn.btn-secondary.btn-sm(
+                [disabled]='!dirty',
+                (click)='discard()') {{ t.t("betterConfiger.editor.discard") }}

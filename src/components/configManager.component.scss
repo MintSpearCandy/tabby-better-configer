@@ -1,0 +1,147 @@
+:host {
+    display: block;
+    /* the injected rule turns settings-tab-body into a flex column; belt and
+     * braces so our height tracks the pane regardless of which mechanism the
+     * host stylesheet wins with */
+    height: 100%;
+    flex: 1;
+    min-height: 0;
+}
+
+.better-configer {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-height: 0;
+    gap: 12px;
+}
+
+.bc-toolbar {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+
+    .bc-title {
+        h3 {
+            margin: 0 0 2px;
+        }
+
+        .bc-subtitle {
+            font-size: 12px;
+            opacity: 0.65;
+        }
+    }
+
+    .bc-toolbar-actions {
+        margin-left: auto;
+        display: flex;
+        gap: 8px;
+    }
+}
+
+.bc-body {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+    gap: 16px;
+}
+
+.bc-nav {
+    width: 240px;
+    flex-shrink: 0;
+    overflow-y: auto;
+    padding-right: 4px;
+}
+
+.bc-plugin-group {
+    margin-bottom: 2px;
+}
+
+.bc-plugin-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 6px;
+    border-radius: 4px;
+    cursor: pointer;
+    user-select: none;
+    font-weight: 600;
+    font-size: 13px;
+
+    &:hover {
+        background: rgba(128, 128, 128, 0.12);
+    }
+
+    .bc-caret {
+        font-size: 10px;
+        width: 12px;
+        opacity: 0.6;
+    }
+
+    .bc-plugin-icon {
+        font-size: 11px;
+        opacity: 0.7;
+    }
+}
+
+.bc-keys {
+    padding-left: 14px;
+}
+
+.bc-key {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 6px 3px 18px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12.5px;
+    font-family: var(--monospace-font, monospace);
+
+    &:hover {
+        background: rgba(128, 128, 128, 0.12);
+    }
+
+    &.active {
+        background: rgba(59, 130, 246, 0.22);
+    }
+
+    .bc-key-name {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .bc-key-badge {
+        font-size: 10px;
+        padding: 0 5px;
+        border-radius: 8px;
+        flex-shrink: 0;
+        font-family: var(--interface-font, sans-serif);
+
+        &.shared {
+            background: rgba(59, 130, 246, 0.25);
+        }
+
+        &.sensitive {
+            background: rgba(220, 38, 38, 0.25);
+        }
+    }
+}
+
+.bc-content {
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.bc-empty {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    opacity: 0.5;
+    font-size: 14px;
+}

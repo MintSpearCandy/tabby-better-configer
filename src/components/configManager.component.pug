@@ -1,0 +1,35 @@
+.better-configer
+    .bc-toolbar
+        .bc-title
+            h3 {{ t.t("betterConfiger.title") }}
+            .bc-subtitle {{ t.t("betterConfiger.description") }}
+        .bc-toolbar-actions
+            button.btn.btn-secondary.btn-sm([disabled]='importing', (click)='importPackage()')
+                | {{ t.t("betterConfiger.toolbar.import") }}
+            button.btn.btn-secondary.btn-sm((click)='exportAll()')
+                | {{ t.t("betterConfiger.toolbar.exportAll") }}
+    .bc-body
+        .bc-nav
+            .bc-plugin-group(*ngFor='let group of groups')
+                .bc-plugin-header((click)='toggleGroup(group)')
+                    i.fas.fa-fw([class]="'bc-caret ' + (group.expanded ? 'fa-chevron-down' : 'fa-chevron-right')")
+                    span.bc-plugin-icon
+                        i.fas(*ngIf='group.builtin', class='fa-cube')
+                        i.fas(*ngIf='!group.builtin', class='fa-puzzle-piece')
+                    span.bc-plugin-name {{ group.displayName }}
+                .bc-keys(*ngIf='group.expanded')
+                    .bc-key(
+                        *ngFor='let ki of group.keys',
+                        (click)='selectKey(ki.key)',
+                        [class.active]='selectedKey === ki.key')
+                        span.bc-key-name {{ ki.key }}
+                        span.bc-key-badge.shared(
+                            *ngIf='ki.declarers.length > 1',
+                            [title]='ki.declarers.join(", ")') {{ t.t("betterConfiger.nav.shared") }}
+                        span.bc-key-badge.sensitive(*ngIf='ki.sensitive') {{ t.t("betterConfiger.nav.sensitive") }}
+        .bc-content
+            bc-module-editor(
+                *ngIf='selectedKey',
+                [key]='selectedKey',
+                [keyInfo]='selectedKeyInfo')
+            .bc-empty(*ngIf='!selectedKey') {{ t.t("betterConfiger.hint.select") }}
