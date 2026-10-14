@@ -31,6 +31,25 @@ export interface PluginGroup {
     expanded?: boolean
 }
 
+/** One row of the Quick access block at the top of the nav. */
+export interface QuickEntry {
+    key: string
+    label: string
+    icon: string
+}
+
+/** Curated quick-access sections, shown pinned above the plugin tree.
+ *  Entries whose key is absent from the current tree are hidden at render
+ *  time (e.g. `terminal` on a plugin set that does not declare it). Icons
+ *  are FontAwesome classes — the host loads the full FA6 free solid set. */
+export const QUICK_ACCESS_KEYS: { key: string, icon: string }[] = [
+    { key: 'profiles', icon: 'fa-plug' },
+    { key: 'groups', icon: 'fa-layer-group' },
+    { key: 'appearance', icon: 'fa-columns' },
+    { key: 'hotkeys', icon: 'fa-keyboard' },
+    { key: 'terminal', icon: 'fa-terminal' },
+]
+
 /** Builtin plugins: nav ordering, keyed by the SHORT plugin name that Tabby's
  *  loader assigns (module.pluginName = 'core', 'terminal', ... — verified via
  *  window.pluginModules; NOT the npm package name 'tabby-core'). */

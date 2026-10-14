@@ -1,6 +1,6 @@
 {
   "name": "tabby-better-configer",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Structured config management for Tabby — per-module view, edit, import/export of config.yaml sections",
   "keywords": [
     "tabby-plugin"

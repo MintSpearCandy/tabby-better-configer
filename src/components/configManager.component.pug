@@ -10,14 +10,30 @@
                 | {{ t.t("betterConfiger.toolbar.exportAll") }}
     .bc-body
         .bc-nav
-            .bc-plugin-group(*ngFor='let group of groups')
+            input.bc-search.form-control.form-control-sm(
+                type='text',
+                [ngModel]='searchText',
+                (ngModelChange)='searchText = $event',
+                [placeholder]="t.t('betterConfiger.search.placeholder')",
+                (keyup.escape)='clearSearch()')
+            .bc-quick(*ngIf='displayedQuickEntries.length')
+                .bc-quick-title {{ t.t("betterConfiger.quick.title") }}
+                .bc-quick-entry(
+                    *ngFor='let e of displayedQuickEntries',
+                    (click)='openQuick(e.key)',
+                    [class.active]='selectedKey === e.key',
+                    [title]='e.key')
+                    i.fas.fa-fw([class]="'bc-quick-icon ' + e.icon")
+                    span.bc-quick-label {{ e.label }}
+                    span.bc-quick-key {{ e.key }}
+            .bc-plugin-group(*ngFor='let group of displayedGroups')
                 .bc-plugin-header((click)='toggleGroup(group)')
                     i.fas.fa-fw([class]="'bc-caret ' + (group.expanded ? 'fa-chevron-down' : 'fa-chevron-right')")
                     span.bc-plugin-icon
                         i.fas(*ngIf='group.builtin', class='fa-cube')
                         i.fas(*ngIf='!group.builtin', class='fa-puzzle-piece')
                     span.bc-plugin-name {{ group.displayName }}
-                .bc-keys(*ngIf='group.expanded')
+                .bc-keys(*ngIf='group.expanded || isSearching')
                     .bc-key(
                         *ngFor='let ki of group.keys',
                         (click)='selectKey(ki.key)',
@@ -27,6 +43,8 @@
                             *ngIf='ki.declarers.length > 1',
                             [title]='ki.declarers.join(", ")') {{ t.t("betterConfiger.nav.shared") }}
                         span.bc-key-badge.sensitive(*ngIf='ki.sensitive') {{ t.t("betterConfiger.nav.sensitive") }}
+            .bc-empty-search(*ngIf='isSearching && !displayedGroups.length && !displayedQuickEntries.length')
+                | {{ t.t("betterConfiger.search.noMatch") }}
         .bc-content
             bc-module-editor(
                 *ngIf='selectedKey',

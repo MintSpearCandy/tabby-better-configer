@@ -1,7 +1,7 @@
 import { Component, OnInit, OnDestroy } from '@angular/core'
 import { BaseComponent, ConfigService, PlatformService, NotificationsService } from 'tabby-core'
 
-import { KeyInfo, PluginGroup, ConfigMapService } from '../services/configMap.service'
+import { KeyInfo, PluginGroup, QuickEntry, ConfigMapService, QUICK_ACCESS_KEYS } from '../services/configMap.service'
 import { PackageIOService, ConfigPackage } from '../services/packageIO.service'
 import { ModuleContentRegistry } from '../services/moduleContent.registry'
 import { BetterConfigerTranslator } from '../i18n'
@@ -34,6 +34,8 @@ export class ConfigManagerComponent extends BaseComponent implements OnInit, OnD
     selectedKey: string | null = null
     selectedKeyInfo: KeyInfo | null = null
     importing = false
+    searchText = ''
+    quickEntries: QuickEntry[] = []
 
     constructor (
         public config: ConfigService,
@@ -79,6 +81,15 @@ export class ConfigManagerComponent extends BaseComponent implements OnInit, OnD
         for (const g of this.groups) {
             g.expanded = prevExpanded.get(g.pluginName) ?? (g === this.groups[0])
         }
+        // recompute here (not in a getter) so labels follow locale changes
+        const present = new Set(this.groups.flatMap(g => g.keys.map(k => k.key)))
+        this.quickEntries = QUICK_ACCESS_KEYS
+            .filter(q => present.has(q.key))
+            .map(q => ({
+                key: q.key,
+                icon: q.icon,
+                label: this.t.t(`betterConfiger.quick.${q.key}`),
+            }))
         // keep selection valid across rebuilds
         const stillThere = this.groups.some(g => g.keys.some(k => k.key === prevSelected))
         if (prevSelected && stillThere) {
@@ -96,6 +107,53 @@ export class ConfigManagerComponent extends BaseComponent implements OnInit, OnD
     selectKey (key: string): void {
         this.selectedKey = key
         this.selectedKeyInfo = this.findKeyInfo(key)
+    }
+
+    /** Quick-access click: select the section AND expand its plugin group, so
+     *  the tree below shows where the key lives. */
+    openQuick (key: string): void {
+        this.selectKey(key)
+        const owner = this.groups.find(g => g.keys.some(k => k.key === key))
+        if (owner) {
+            owner.expanded = true
+        }
+    }
+
+    clearSearch (): void {
+        this.searchText = ''
+    }
+
+    get isSearching (): boolean {
+        return this.searchText.trim() !== ''
+    }
+
+    /** Tree view filtered by the search box: a group matching by display name
+     *  keeps all its keys; otherwise only its matching keys are kept. Copies,
+     *  not the originals — group.expanded state must stay untouched so that
+     *  clearing the search restores the pre-search collapse state. */
+    get displayedGroups (): PluginGroup[] {
+        const q = this.searchText.trim().toLowerCase()
+        if (!q) {
+            return this.groups
+        }
+        return this.groups
+            .map(g => {
+                if (g.displayName.toLowerCase().includes(q)) {
+                    return g
+                }
+                const keys = g.keys.filter(k => k.key.toLowerCase().includes(q))
+                return keys.length ? { ...g, keys } : null
+            })
+            .filter(g => g !== null)
+    }
+
+    get displayedQuickEntries (): QuickEntry[] {
+        const q = this.searchText.trim().toLowerCase()
+        if (!q) {
+            return this.quickEntries
+        }
+        return this.quickEntries.filter(e =>
+            e.key.toLowerCase().includes(q) || e.label.toLowerCase().includes(q))
     }
 
     /** v2: custom component for this key (structured profiles form). Null in
