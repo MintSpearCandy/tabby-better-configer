@@ -39,6 +39,14 @@ class PlatformService {}
 class HostAppService {}
 class NotificationsService { info () {} error () {} }
 class LocaleService { getLocale () { return 'en' } }
+class VaultService {
+    isEnabled () { return false }
+    isOpen () { return false }
+    async getSecret () { return null }
+    async addSecret () { }
+    async updateSecret () { }
+    async removeSecret () { }
+}
 
 function strictProxy (target, name) {
     return new Proxy(target, {
@@ -62,6 +70,7 @@ const tabbyCore = strictProxy({
     HostAppService,
     NotificationsService,
     LocaleService,
+    VaultService,
     configMerge: (a, b) => b,
     TabbyCoreModule: {},
 }, 'tabby-core')

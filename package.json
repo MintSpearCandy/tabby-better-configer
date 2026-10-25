@@ -1,6 +1,6 @@
 {
   "name": "tabby-better-configer",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Structured config management for Tabby — per-module view, edit, import/export of config.yaml sections",
   "keywords": [
     "tabby-plugin"
@@ -52,5 +52,9 @@
     "typescript": "^5.4.0",
     "webpack": "^5.90.0",
     "webpack-cli": "^5.1.4"
+  },
+  "dependencies": {
+    "https-proxy-agent": "^7.0.6",
+    "isomorphic-git": "^1.44.2"
   }
 }
