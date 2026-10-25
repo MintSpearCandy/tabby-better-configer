@@ -1,0 +1,80 @@
+:host {
+    display: block;
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 4px 2px;
+}
+
+.config-yaml-tab {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-width: 1100px;
+}
+
+section.bc-section {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+
+    h4 {
+        margin: 0;
+        font-family: var(--monospace-font, monospace);
+    }
+}
+
+.bc-section-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+
+    .bc-section-actions {
+        margin-left: auto;
+        display: flex;
+        gap: 8px;
+    }
+}
+
+.bc-editors {
+    display: flex;
+    gap: 12px;
+    align-items: stretch;
+
+    .bc-editor-col {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+
+        &.defaults {
+            flex: 0 0 42%;
+        }
+
+        h5 {
+            margin: 0 0 4px;
+            font-size: 13px;
+            opacity: 0.7;
+        }
+    }
+
+    textarea.bc-yaml {
+        height: 42vh;
+        min-height: 260px;
+        font-family: var(--monospace-font, monospace);
+        font-size: 12.5px;
+        resize: vertical;
+        white-space: pre;
+    }
+}
+
+.bc-status {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    font-size: 12px;
+
+    .bc-restart-hint {
+        opacity: 0.55;
+    }
+}

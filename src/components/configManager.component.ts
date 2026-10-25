@@ -6,30 +6,15 @@ import { PackageIOService, ConfigPackage } from '../services/packageIO.service'
 import { ModuleContentRegistry } from '../services/moduleContent.registry'
 import { BetterConfigerTranslator } from '../i18n'
 
-/** Layout unlock, injected while this component exists (the :has() guard
- *  keeps it inert on all other settings tabs). Tabby's settings-tab-body is
- *  a plain auto-height block: without this, OUR height is driven by the
- *  tallest child (the left nav, fully expanded) and overflows the pane,
- *  scrolling the whole page instead of the nav. Locked to 100% of the pane
- *  (div.tab-pane has a definite viewport-derived height), the nav scrolls
- *  internally and the editor fills the remaining space. */
-const LAYOUT_OVERRIDE_CSS = [
-    'settings-tab-body:has(> better-configer) {',
-    '    max-width: none !important;',
-    '    height: 100%;',
-    '    display: flex;',
-    '    flex-direction: column;',
-    '    overflow: hidden;',
-    '}',
-].join('\n')
-const LAYOUT_STYLE_ID = 'better-configer-layout-override'
-
 @Component({
     selector: 'better-configer',
     template: require('./configManager.component.pug'),
     styles: [require('./configManager.component.scss')],
 })
 export class ConfigManagerComponent extends BaseComponent implements OnInit, OnDestroy {
+    /** The four sub-tabs the settings page is organized into:
+     *  manager (per-module sections) / yaml (raw file) / sync (git) / settings. */
+    activeTab: 'manager' | 'yaml' | 'sync' | 'settings' = 'manager'
     groups: PluginGroup[] = []
     selectedKey: string | null = null
     selectedKeyInfo: KeyInfo | null = null
@@ -50,7 +35,6 @@ export class ConfigManagerComponent extends BaseComponent implements OnInit, OnD
     }
 
     ngOnInit (): void {
-        this.injectLayoutOverride()
         this.rebuildGroups()
         // Select the first section so the pane is never empty on open
         const first = this.groups[0]?.keys[0]
@@ -69,9 +53,8 @@ export class ConfigManagerComponent extends BaseComponent implements OnInit, OnD
 
     ngOnDestroy (): void {
         super.ngOnDestroy()
-        // The width override style element is intentionally left in place:
-        // the :has() selector only matches while a <better-configer> element
-        // exists, so it is inert on all other settings tabs.
+        // The pane-layout override style lives in NativeTabsService (plugin
+        // lifetime); its :has() guard keeps it inert on all other tabs.
     }
 
     rebuildGroups (): void {
@@ -240,25 +223,5 @@ export class ConfigManagerComponent extends BaseComponent implements OnInit, OnD
             }
         }
         return null
-    }
-
-    /** Tabby's settings-tab-body is an auto-height, 600px-wide block. While
-     *  this component exists, pin it to the pane height and full width via a
-     *  :has() rule (Chromium 120+); on failure the layout degrades to the
-     *  stock host behavior. The style element is intentionally left in place:
-     *  the :has() selector only matches while a <better-configer> element
-     *  exists, so it is inert on all other settings tabs. */
-    private injectLayoutOverride (): void {
-        try {
-            if (document.getElementById(LAYOUT_STYLE_ID)) {
-                return
-            }
-            const style = document.createElement('style')
-            style.id = LAYOUT_STYLE_ID
-            style.textContent = LAYOUT_OVERRIDE_CSS
-            document.head.appendChild(style)
-        } catch {
-            // non-fatal: fall back to host layout
-        }
     }
 }

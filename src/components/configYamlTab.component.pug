@@ -1,0 +1,29 @@
+.config-yaml-tab
+    section.bc-section
+        .bc-section-head
+            h4 config.yaml
+            .bc-section-actions
+                button.btn.btn-primary.btn-sm(
+                    [disabled]='!dirty || hasError || saving',
+                    (click)='save()') {{ t.t("betterConfiger.editor.save") }}
+                button.btn.btn-secondary.btn-sm(
+                    [disabled]='!dirty',
+                    (click)='discard()') {{ t.t("betterConfiger.editor.discard") }}
+                button.btn.btn-secondary.btn-sm((click)='toggleDefaults()')
+                    | {{ (showDefaults ? t.t("betterConfiger.fileTab.hideDefaults") : t.t("betterConfiger.fileTab.showDefaults")) }}
+                button.btn.btn-secondary.btn-sm(*ngIf='platform.getConfigPath()', (click)='showInFolder()')
+                    i.fas.fa-fw.fa-folder-open
+                    | {{ t.t("betterConfiger.fileTab.showInFolder") }}
+        .bc-editors
+            .bc-editor-col
+                textarea.form-control.bc-yaml(
+                    [ngModel]='text',
+                    (ngModelChange)='onEdit($event)',
+                    spellcheck='false')
+            .bc-editor-col.defaults(*ngIf='showDefaults')
+                h5 {{ t.t("betterConfiger.editor.defaults") }}
+                textarea.form-control.bc-yaml([ngModel]='defaultsText', [readonly]='true', spellcheck='false')
+        .bc-status
+            span.text-success(*ngIf='!hasError && text.trim()') ✓ {{ t.t("betterConfiger.editor.valid") }}
+            span.text-danger(*ngIf='hasError') ✗ {{ t.t("betterConfiger.editor.invalid") }}: {{ yamlError }}
+            span.bc-restart-hint {{ t.t("betterConfiger.warn.restart") }}

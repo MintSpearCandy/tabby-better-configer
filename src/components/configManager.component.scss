@@ -16,6 +16,19 @@
     gap: 12px;
 }
 
+.bc-tabs {
+    flex-shrink: 0;
+}
+
+/* manager tab keeps the fixed two-pane layout (nav tree fills the pane);
+ * the other tabs scroll naturally via their own :host rules */
+.bc-tab-manager {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+}
+
 .bc-toolbar {
     display: flex;
     align-items: flex-start;

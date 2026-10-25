@@ -1,0 +1,134 @@
+.bc-sync
+    .bc-sync-head
+        .bc-sync-title
+            h4 {{ t.t("betterConfiger.sync.title") }}
+            .bc-sync-subtitle {{ t.t("betterConfiger.sync.subtitle") }}
+        .bc-sync-head-actions
+            .bc-proxy-box(*ngIf='!editing', [title]="t.t('betterConfiger.sync.proxyHint')")
+                input.form-control.form-control-sm.bc-proxy(
+                    type='text',
+                    [ngModel]='proxyDraft',
+                    (ngModelChange)='proxyDraft = $event',
+                    (change)='saveProxy()',
+                    [placeholder]="t.t('betterConfiger.sync.proxyPlaceholder')")
+                .bc-proxy-warn(*ngIf='proxyLooksWrong') {{ t.t("betterConfiger.sync.proxyWarn") }}
+            button.btn.btn-primary.btn-sm(
+                *ngIf='!editing',
+                (click)='startEdit()') {{ t.t("betterConfiger.sync.add") }}
+    .bc-sync-empty(*ngIf='!sources.length && !editing') {{ t.t("betterConfiger.sync.noSources") }}
+
+    .bc-sync-source(*ngFor='let s of sources')
+        .bc-sync-source-main
+            .bc-sync-source-name-line
+                span.bc-sync-source-name {{ s.name }}
+                span.bc-sync-badge.mode({{ s.mode }})
+                span.bc-sync-badge.token(*ngIf='tokenBadge(s)') {{ tokenBadge(s) }}
+                span.bc-sync-badge.sensitive(*ngIf='s.includeSensitive') {{ t.t("betterConfiger.nav.sensitive") }}
+            .bc-sync-source-url {{ s.url }} @ {{ s.branch }} : {{ s.path }}
+            .bc-sync-source-last
+                span(*ngIf='s.lastPull')
+                    | {{ t.t("betterConfiger.sync.lastPull") }}: {{ s.lastPull.at.slice(0, 19).replace("T", " ") }}
+                    |  ({{ s.lastPull.oid.slice(0, 8) }} {{ s.lastPull.message }})
+                span(*ngIf='!s.lastPull') {{ t.t("betterConfiger.sync.lastPull") }}: {{ t.t("betterConfiger.sync.never") }}
+                span.sep ·
+                span(*ngIf='s.lastPush')
+                    | {{ t.t("betterConfiger.sync.lastPush") }}: {{ s.lastPush.at.slice(0, 19).replace("T", " ") }}
+                span(*ngIf='!s.lastPush') {{ t.t("betterConfiger.sync.lastPush") }}: {{ t.t("betterConfiger.sync.never") }}
+        .bc-sync-source-actions
+            button.btn.btn-secondary.btn-sm(
+                [disabled]='anyBusy(s.id)',
+                (click)='pull(s)')
+                i.fas.fa-fw.fa-download
+                | {{ t.t("betterConfiger.sync.pull") }}
+            button.btn.btn-secondary.btn-sm(
+                [disabled]='anyBusy(s.id)',
+                (click)='push(s)')
+                i.fas.fa-fw.fa-upload
+                | {{ t.t("betterConfiger.sync.push") }}
+            button.btn.btn-secondary.btn-sm(
+                [disabled]='anyBusy(s.id)',
+                (click)='startEdit(s)') {{ t.t("betterConfiger.sync.edit") }}
+            button.btn.btn-secondary.btn-sm.btn-danger-outlined(
+                [disabled]='anyBusy(s.id)',
+                (click)='deleteSource(s)') {{ t.t("betterConfiger.sync.delete") }}
+
+    .bc-sync-editor(*ngIf='editing')
+        h5 {{ editingNew ? t.t("betterConfiger.sync.add") : t.t("betterConfiger.sync.edit") }}
+        .form-row
+            label {{ t.t("betterConfiger.sync.name") }}
+            input.form-control.form-control-sm(type='text', [(ngModel)]='editing.name')
+        .form-row
+            label {{ t.t("betterConfiger.sync.url") }}
+            input.form-control.form-control-sm(type='text', [(ngModel)]='editing.url', placeholder='https://github.com/user/repo.git')
+        .form-row.two
+            .form-cell
+                label {{ t.t("betterConfiger.sync.branch") }}
+                input.form-control.form-control-sm(type='text', [(ngModel)]='editing.branch')
+                button.btn.btn-secondary.btn-sm.bc-branch-refresh(
+                    [disabled]='fetchingBranches || !editing.url',
+                    (click)='refreshBranches()')
+                    i.fas.fa-fw([class]='fetchingBranches ? "fa-spin fa-sync" : "fa-sync"')
+                    | {{ t.t("betterConfiger.sync.branches") }}
+                .bc-branch-list(*ngIf='branches && branches.length')
+                    button.bc-branch-option(
+                        *ngFor='let b of branches',
+                        [class.active]='editing.branch === b',
+                        (click)='pickBranch(b)') {{ b }}
+            .form-cell
+                label {{ t.t("betterConfiger.sync.path") }}
+                input.form-control.form-control-sm(type='text', [(ngModel)]='editing.path')
+        .form-row.two
+            .form-cell
+                label {{ t.t("betterConfiger.sync.mode") }}
+                select.form-control.form-control-sm([(ngModel)]='editing.mode')
+                    option(value='merge') {{ t.t("betterConfiger.sync.modeMerge") }}
+                    option(value='replace') {{ t.t("betterConfiger.sync.modeReplace") }}
+            .form-cell.bc-sync-checks
+                label.bc-check
+                    input(type='checkbox', [(ngModel)]='editing.includeSensitive')
+                    span {{ t.t("betterConfiger.sync.includeSensitive") }}
+        .form-row
+            label {{ t.t("betterConfiger.sync.token") }}
+            input.form-control.form-control-sm.bc-token(type='password', [(ngModel)]='draftToken',
+                [placeholder]="t.t('betterConfiger.sync.tokenPlaceholder')")
+            label.bc-check(*ngIf='sync.vaultAvailable')
+                input(type='checkbox', [(ngModel)]='draftTokenInVault')
+                span {{ t.t("betterConfiger.sync.tokenVault") }}
+            .bc-token-hint(*ngIf='!sync.vaultAvailable') {{ t.t("betterConfiger.sync.tokenVaultUnavailable") }}
+        .bc-sync-editor-actions
+            button.btn.btn-primary.btn-sm((click)='saveEdit()') {{ t.t("betterConfiger.sync.save") }}
+            button.btn.btn-secondary.btn-sm((click)='cancelEdit()') {{ t.t("betterConfiger.editor.cancel") }}
+
+    .bc-sync-log
+        .bc-sync-log-head
+            span.bc-sync-log-title
+                i.fas.fa-fw.fa-list-ul
+                | {{ t.t("betterConfiger.sync.log.title") }}
+            .bc-sync-log-actions
+                label.bc-check.bc-debug-toggle([title]="t.t('betterConfiger.sync.log.debugHint')")
+                    input(type='checkbox', [ngModel]='showDebugLog', (ngModelChange)='toggleDebugLog($event)')
+                    span {{ t.t("betterConfiger.sync.log.debug") }}
+                button.btn.btn-secondary.btn-sm((click)='copyLog()') {{ t.t("betterConfiger.sync.log.copy") }}
+                button.btn.btn-secondary.btn-sm((click)='log.clear()') {{ t.t("betterConfiger.sync.log.clear") }}
+        .bc-sync-log-body([class.hide-debug]='!showDebugLog', #logScroll)
+            .bc-sync-log-line(
+                *ngFor='let e of log.entries',
+                [class.debug]='e.level === "debug"',
+                [class.error]='e.level === "error"',
+                [class.success]='e.level === "success"')
+                span.bc-log-time {{ e.at | date:'HH:mm:ss' }}
+                span.bc-log-op {{ e.op }}
+                span.bc-log-msg
+                    | {{ e.message }}
+                    span.bc-log-detail(*ngIf='e.detail') {{ e.detail }}
+            .bc-sync-log-empty(*ngIf='!log.entries.length') {{ t.t("betterConfiger.sync.log.empty") }}
+
+    .bc-modal-backdrop(*ngIf='confirmReq', (click)='pickConfirm(null)')
+        .bc-modal((click)='$event.stopPropagation()')
+            .bc-modal-title {{ confirmReq.title }}
+            .bc-modal-detail {{ confirmReq.detail }}
+            .bc-modal-actions
+                button(
+                    *ngFor='let b of confirmReq.buttons',
+                    [class]='b.className',
+                    (click)='pickConfirm(b.value)') {{ b.label }}

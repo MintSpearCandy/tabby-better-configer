@@ -8,6 +8,10 @@ import { BetterConfigerConfigProvider } from './config'
 import { BetterConfigerSettingsTabProvider } from './settings'
 import { ConfigManagerComponent } from './components/configManager.component'
 import { ModuleEditorComponent } from './components/moduleEditor.component'
+import { ConfigYamlTabComponent } from './components/configYamlTab.component'
+import { PluginSettingsTabComponent } from './components/pluginSettingsTab.component'
+import { SyncPanelComponent } from './components/syncPanel.component'
+import { NativeTabsService } from './services/nativeTabs.service'
 
 @NgModule({
     imports: [CommonModule, FormsModule, TabbyCoreModule],
@@ -17,6 +21,16 @@ import { ModuleEditorComponent } from './components/moduleEditor.component'
         { provide: ConfigProvider, useClass: BetterConfigerConfigProvider, multi: true },
         { provide: SettingsTabProvider, useClass: BetterConfigerSettingsTabProvider, multi: true },
     ],
-    declarations: [ConfigManagerComponent, ModuleEditorComponent],
+    declarations: [
+        ConfigManagerComponent,
+        ModuleEditorComponent,
+        ConfigYamlTabComponent,
+        PluginSettingsTabComponent,
+        SyncPanelComponent,
+    ],
 })
-export default class BetterConfigerModule { }
+export default class BetterConfigerModule {
+    constructor (nativeTabs: NativeTabsService) {
+        nativeTabs.start()
+    }
+}

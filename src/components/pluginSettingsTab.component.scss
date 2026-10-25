@@ -1,0 +1,41 @@
+:host {
+    display: block;
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 4px 2px;
+}
+
+.plugin-settings-tab {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    max-width: 900px;
+
+    h4 {
+        margin: 0;
+    }
+}
+
+.bc-toggle-row {
+    display: flex;
+    gap: 24px;
+}
+
+.bc-check {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    font-size: 13px;
+    margin: 0;
+
+    input[type='checkbox'] {
+        margin: 0;
+    }
+}
+
+.bc-native-hint {
+    font-size: 11.5px;
+    opacity: 0.6;
+}

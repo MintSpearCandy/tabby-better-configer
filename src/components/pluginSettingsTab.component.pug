@@ -1,0 +1,12 @@
+.plugin-settings-tab
+    h4 {{ t.t("betterConfiger.native.title") }}
+    .bc-toggle-row
+        label.bc-check
+            input(type='checkbox', [ngModel]='hideNativeConfigFile',
+                (ngModelChange)='setHideNativeConfigFile($event)')
+            span {{ t.t("betterConfiger.native.hideConfigFile") }}
+        label.bc-check
+            input(type='checkbox', [ngModel]='hideNativeConfigSync',
+                (ngModelChange)='setHideNativeConfigSync($event)')
+            span {{ t.t("betterConfiger.native.hideConfigSync") }}
+    .bc-native-hint {{ t.t("betterConfiger.native.hint") }}
