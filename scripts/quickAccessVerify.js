@@ -80,6 +80,11 @@ async function main () {
     ok('config manager tab opened', pill === 'clicked', String(pill))
     await sleep(500)
 
+    // sub-tab state persists across sessions now — always switch to the
+    // Sections sub-tab before asserting the nav
+    await evalJs(`(() => { const r = ${ROOT}; const a = r?.querySelectorAll('.bc-tabs a'); if (a && a[0]) a[0].click(); return 'ok' })()`)
+    await sleep(400)
+
     // the gear REUSES an existing settings tab (ButtonProvider.open →
     // selectTab), so a leftover search string from a previous run would
     // filter everything — reset it before asserting

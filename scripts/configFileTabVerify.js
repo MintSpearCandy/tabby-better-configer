@@ -1,17 +1,14 @@
-/** CDP E2E for the Config Manager settings page and its four sub-tabs
- *  (Sections / config.yaml / Git sync / Settings), bc instance, port 9233.
- *  Covers: page + sub-tab registration, raw config.yaml editor round-trip,
- *  native-tab hiding toggles (CSS), and the full git sync flow — add source /
- *  pull & merge / push / force-push-after-rejection / branch switch.
+/** CDP E2E for the Config Manager settings page (4 sub-tabs) and the
+ *  IDE-style git browser (3-pane: branch tree | commit graph | diff),
+ *  bc instance, port 9233.
  *
- *  Default mode serves a LOCAL bare repo over smart-http
- *  (scripts/localGitServer.js, git http-backend shim on 127.0.0.1:9239) —
- *  deterministic, no network. `--github` switches to a live GitHub repo and
- *  waits out github.com:443 blocking windows.
- *
- *  Sub-tabs render exclusively (*ngIf), so most element queries can scope to
- *  the page shell (`better-configer`) — just make sure the right sub-tab is
- *  active first. Confirm modals are the plugin's own `.bc-modal` overlay.
+ *  Sync scenarios (local smart-http server via scripts/localGitServer.js):
+ *  source bootstrap → fetch → commit(ahead) → push → divergence → clean
+ *  merge → CONFLICT merge with diff-based resolution → apply → branch
+ *  create/switch/push → delete guard → soft reset → update&apply →
+ *  graph rendering → dead-port network retry. Non-sync regressions:
+ *  sub-tabs, raw editor, native-pill toggles, debug-level log,
+ *  cross-window live sync.
  *
  *  Usage: node scripts/configFileTabVerify.js [port] [--github]
  */
@@ -32,13 +29,16 @@ const sleep = ms => new Promise(r => setTimeout(r, ms))
 
 // unique per run — makes assertions immune to config residue from earlier runs
 const RUN_VAL = Number(String(Date.now()).slice(-6))
-const RUN_VAL_A = RUN_VAL + 1
-const pkgFor = (recentValue, profileName) => JSON.stringify({
+const RUN_VAL_B = RUN_VAL + 1
+const RUN_VAL_C = RUN_VAL + 2
+const RUN_VAL_A = RUN_VAL + 3
+const SRC_NAME = 'E2E ' + RUN_VAL
+const pkgFor = (terminalValue, extraName) => JSON.stringify({
     format: 'tabby-config-package', version: 1, kind: 'full',
     exportedAt: new Date().toISOString(), tabbyVersion: '1.0.237',
     modules: {
-        terminal: { showRecentProfiles: recentValue },
-        profiles: [{ id: 'bc-e2e-profile', name: profileName, type: 'local', options: {}, group: 'bc-e2e' }],
+        terminal: { showRecentProfiles: terminalValue },
+        ...(extraName ? { profiles: [{ id: 'bc-e2e-profile', name: extraName, type: 'local', options: {}, group: 'bc-e2e' }] } : {}),
     },
     excluded: [],
 }, null, 2)
@@ -102,8 +102,6 @@ async function remoteContent (branch) {
     return r.content ? Buffer.from(r.content.replace(/\n/g, ''), 'base64').toString('utf8') : null
 }
 
-/** github.com:443 is intermittently blocked on this machine (api.github.com
- *  is not). In --github mode, wait for a reachable window. */
 const waitForGitHub = async (timeoutMs = 300000) => {
     const start = Date.now()
     while (Date.now() - start < timeoutMs) {
@@ -115,10 +113,7 @@ const waitForGitHub = async (timeoutMs = 300000) => {
             if (r.status < 400) {
                 return true
             }
-            console.log(`  github.com → HTTP ${r.status}, waiting for a window...`)
-        } catch {
-            console.log('  github.com unreachable, waiting for a window...')
-        }
+        } catch { /* blocked */ }
         await sleep(5000)
     }
     return false
@@ -131,7 +126,7 @@ async function startLocalServer () {
     await run('git', ['init', '--bare', '-b', 'main', path.join(GITROOT, 'repo.git')])
     await run('git', ['-C', path.join(GITROOT, 'repo.git'), 'config', 'http.receivepack', 'true'])
     const server = spawn(process.execPath, [path.join(__dirname, 'localGitServer.js'), String(LOCAL_PORT), GITROOT], { stdio: ['ignore', 'pipe', 'inherit'] })
-    await new Promise(r => server.stdout.on('data', r)) // ready line
+    await new Promise(r => server.stdout.on('data', r))
     fs.rmSync(SCRATCH, { recursive: true, force: true })
     await run('git', ['clone', LOCAL_URL, SCRATCH])
     await gitOp(['checkout', '-B', 'main'])
@@ -176,20 +171,9 @@ async function main_ () {
         }
         return r.result?.result?.value
     }
-    // The ONE settings page; sub-tabs render exclusively so queries below can
-    // scope to the shell as long as the right sub-tab is active.
     const ROOT = `([...document.querySelectorAll('better-configer')].filter(e => e.offsetParent !== null).slice(-1)[0])`
     const click = sel => evalJs(`${ROOT}?.querySelector('${sel}')?.click()`)
-    // NOTE: elements/NodeLists do not survive returnByValue — always compute
-    // booleans/counts INSIDE the page expression
     const evalBool = expr => evalJs(`!!(${expr})`)
-    const setInput = (sel, value) => evalJs(`(() => {
-        const el = ${ROOT}?.querySelector('${sel}')
-        if (!el) return 'missing ' + '${sel}'
-        el.value = ${JSON.stringify(value)}
-        el.dispatchEvent(new Event('input', { bubbles: true }))
-        return 'ok'
-    })()`)
     const poll = async (fn, timeoutMs = 20000, interval = 400) => {
         const start = Date.now()
         while (Date.now() - start < timeoutMs) {
@@ -199,21 +183,6 @@ async function main_ () {
         }
         return null
     }
-    /** sub-tabs: 0=Sections 1=config.yaml 2=Git sync 3=Settings */
-    const subTab = i => evalJs(`(() => { const a = ${ROOT}?.querySelectorAll('.bc-tabs a'); if (a && a[${i}]) { a[${i}].click(); return 'ok' } return 'missing' })()`)
-    const subTabLabel = i => evalJs(`(() => { const a = ${ROOT}?.querySelectorAll('.bc-tabs a'); return a && a[${i}] ? a[${i}].textContent.trim() : null })()`)
-
-    // ------------------------------------------------ in-app modal helpers ---
-    const LASTCARD = `(() => { const cards = ${ROOT}?.querySelectorAll('.bc-sync-source'); return cards ? cards[cards.length - 1] : null })()`
-    const modalInfo = () => evalJs(`(() => {
-        const m = [...document.querySelectorAll('.bc-modal')].filter(e => e.offsetParent !== null).pop()
-        if (!m) return null
-        return {
-            title: (m.querySelector('.bc-modal-title') ?? {}).textContent?.trim() ?? '',
-            detail: (m.querySelector('.bc-modal-detail') ?? {}).textContent?.trim().split('\\n')[0] ?? '',
-            buttons: [...m.querySelectorAll('.bc-modal-actions button')].map(b => b.textContent.trim()),
-        }
-    })()`)
     const waitUntil = async (fn, timeoutMs, interval = 250) => {
         const start = Date.now()
         while (Date.now() - start < timeoutMs) {
@@ -223,36 +192,65 @@ async function main_ () {
         }
         return null
     }
-    const waitModal = (timeoutMs = 15000) => waitUntil(async () => (await modalInfo()) ?? null, timeoutMs)
-    const modalGone = (timeoutMs = 10000) => waitUntil(async () => ((await modalInfo()) === null ? true : null), timeoutMs)
-    const clickModalButton = i => evalJs(`(() => {
-        const m = [...document.querySelectorAll('.bc-modal')].filter(e => e.offsetParent !== null).pop()
-        const bs = m?.querySelectorAll('.bc-modal-actions button')
-        if (bs && bs[${i}]) { bs[${i}].click(); return true }
-        return false
-    })()`)
-    /** Click a source action, wait for ITS modal, press button `buttonIndex`.
-     *  Retries when the synthetic click races Angular's row re-render. */
-    const act = async (actionIndex, buttonIndex, titleRe, tries = 6) => {
-        for (let i = 0; i < tries; i++) {
-            await evalJs(`(() => { const bs = ${LASTCARD}?.querySelectorAll('.bc-sync-source-actions .btn'); if (bs && bs[${actionIndex}]) { bs[${actionIndex}].click(); return 'ok' } return 'missing' })()`)
-            const m = await waitModal(6000)
-            if (m && titleRe.test(m.title)) {
-                await clickModalButton(buttonIndex)
-                await modalGone()
-                return m.title
-            }
-            if (m) { // stray modal — cancel it and retry
-                await clickModalButton(m.buttons.length - 1)
+    const subTab = i => evalJs(`(() => { const a = ${ROOT}?.querySelectorAll('.bc-tabs a'); if (a && a[${i}]) { a[${i}].click(); return 'ok' } return 'missing' })()`)
+
+    // -------------------------------------------- source/browser helpers ---
+    /** source tab pill by name text */
+    const SRCTAB = name => `(() => [...document.querySelectorAll('.bc-source-tab')].find(t => (t.textContent || '').includes(${JSON.stringify(name)})) )()`
+    const selectSource = async (name) => {
+        await evalJs(`${SRCTAB(name)}?.click()`)
+        return poll(() => evalBool(`(() => { const b = [...document.querySelectorAll('bc-git-browser')].filter(e => e.offsetParent !== null).pop(); return b && b.querySelector('.bc-branch-current') && (b.querySelectorAll('.bc-row').length >= 1) })()`), 30000)
+    }
+    const BROWSER = `(() => [...document.querySelectorAll('bc-git-browser')].filter(e => e.offsetParent !== null).pop() )()`
+    const browserOp = (op) => evalJs(`${BROWSER}?.querySelector('[data-op="${op}"]')?.click()`)
+    const browserText = (sel) => evalJs(`(() => { const b = ${BROWSER}; return (b?.querySelector('${sel}') ?? {}).textContent?.replace(/\\s+/g, ' ').trim() ?? null })()`)
+    /** click an op button and WAIT for its modal (clicks race re-renders) */
+    const opModal = async (op, timeoutMs = 8000) => {
+        for (let i = 0; i < 4; i++) {
+            // a modal from a previous step must not be mistaken for this op's
+            if (await modalInfo()) {
+                await evalJs(`(() => { const m = [...document.querySelectorAll('.bc-modal')].filter(e => e.offsetParent !== null).pop(); const bs = m?.querySelectorAll('.bc-modal-actions button'); if (bs && bs.length) bs[0].click(); return 'ok' })()`)
                 await modalGone()
             }
-            await sleep(600)
+            browserOp(op)
+            const m = await waitUntil(() => modalInfo(), Math.min(timeoutMs, 3000))
+            if (m) return m
         }
         return null
     }
+    const modalInfo = () => evalJs(`(() => {
+        const m = [...document.querySelectorAll('.bc-modal')].filter(e => e.offsetParent !== null).pop()
+        if (!m) return null
+        return {
+            cls: m.className,
+            title: (m.querySelector('.bc-modal-title') ?? {}).textContent?.trim() ?? '',
+            buttons: [...m.querySelectorAll('.bc-modal-actions button')].map(b => b.textContent.trim()),
+        }
+    })()`)
+    const waitModal = (timeoutMs = 15000) => waitUntil(async () => (await modalInfo()) ?? null, timeoutMs)
+    const modalGone = (timeoutMs = 10000) => waitUntil(async () => ((await modalInfo()) === null ? true : null), timeoutMs)
+    const clickModalButtonN = (n) => evalJs(`(() => { const m = [...document.querySelectorAll('.bc-modal')].filter(e => e.offsetParent !== null).pop(); const bs = m?.querySelectorAll('.bc-modal-actions button'); if (bs && bs[${n}]) { bs[${n}].click(); return true } return false })()`)
+    const clickModalPrimary = () => evalJs(`(() => { const m = [...document.querySelectorAll('.bc-modal')].filter(e => e.offsetParent !== null).pop(); const bs = m?.querySelectorAll('.bc-modal-actions button'); if (bs && bs.length) { bs[bs.length - 1].click(); return true } return false })()`)
+    const setModalInput = (sel, value) => evalJs(`(() => {
+        const m = [...document.querySelectorAll('.bc-modal')].filter(e => e.offsetParent !== null).pop()
+        const el = m?.querySelector('${sel}')
+        if (!el) return 'missing'
+        el.value = ${JSON.stringify(value)}
+        el.dispatchEvent(new Event('input', { bubbles: true }))
+        return 'ok'
+    })()`)
+    const setModalSelect = (sel, value) => evalJs(`(() => {
+        const m = [...document.querySelectorAll('.bc-modal')].filter(e => e.offsetParent !== null).pop()
+        const el = m?.querySelector('${sel}')
+        if (!el) return 'missing'
+        el.value = ${JSON.stringify(value)}
+        el.dispatchEvent(new Event('change', { bubbles: true }))
+        return 'ok'
+    })()`)
+    // the log window is COLLAPSED by default (lines are not in the DOM) —
+    // read the service's buffer through the debug handle instead
     const logText = () => evalJs(`(() => {
-        const lines = [...(${ROOT})?.querySelectorAll('.bc-sync-log-line') ?? []].map(l => l.textContent)
-        return lines.join('\\n')
+        try { return (window.__betterConfigerLog?.entries ?? []).map(e => e.message + ' ' + (e.detail ?? '')).join('\\n') } catch { return '' }
     })()`)
 
     // seed remote main with this run's unique package
@@ -261,7 +259,6 @@ async function main_ () {
     // ---------------------------------------------------------------- load ---
     ok('plugin loaded', !!(await poll(() => evalJs(`!!(window.pluginModules ?? []).some(m => m.pluginName === 'better-configer')`), 30000)))
 
-    // open settings and switch to our page
     await evalJs(`(() => {
         const btns = [...document.querySelectorAll('.tab-bar .btn-tab-bar')]
         btns.find(b => [...b.querySelectorAll('svg path')].some(p => (p.getAttribute('d') ?? '').startsWith('M255.1 512c-56.05')))?.click()
@@ -271,18 +268,15 @@ async function main_ () {
         const tabs = [...document.querySelectorAll('settings-tab')].filter(e => e.offsetParent !== null)
         const links = [...(tabs[tabs.length - 1] ?? document).querySelectorAll('.nav-pills a')]
         const ours = links.find(a => /Config Manager|配置管理/.test(a.textContent))
-        if (!ours) return 'no-pill: ' + links.map(l => l.textContent.trim()).join('|')
+        if (!ours) return 'no-pill'
         ours.click()
         return 'clicked'
     })()`)
-    ok('config manager page opened', pill === 'clicked', String(pill))
+    ok('config manager page opened', pill === 'clicked')
     await sleep(500)
 
     // ------------------------------------------------------------ sub-tabs ---
     ok('four sub-tabs present', (await evalJs(`(() => { const a = ${ROOT}?.querySelectorAll('.bc-tabs a'); return a ? a.length : 0 })()`)) === 4)
-    console.log('      labels:', await subTabLabel(0), '/', await subTabLabel(1), '/', await subTabLabel(2), '/', await subTabLabel(3))
-    // the settings page (and its sub-tab state) SURVIVES between runs — always
-    // switch explicitly instead of relying on the default
     await subTab(0)
     ok('manager tab reachable', await evalBool(`(() => { const a = ${ROOT}?.querySelectorAll('.bc-tabs a'); return a && a[0] && a[0].classList.contains('active') })()`))
     ok('sections tree visible on manager tab', await evalBool(`${ROOT}?.querySelector('.bc-nav')`))
@@ -290,39 +284,38 @@ async function main_ () {
     await subTab(1)
     ok('raw editor present (yaml tab)', await evalBool(`${ROOT}?.querySelector('bc-config-yaml-tab textarea.bc-yaml')`))
     await subTab(3)
-    ok('native toggles present (settings tab)', (await evalJs(`(() => { const s = ${ROOT}?.querySelector('bc-plugin-settings'); return s ? [...s.querySelectorAll('input[type=checkbox]')].length : 0 })()`)) >= 2)
+    ok('native toggles present (settings tab)', (await evalJs(`(() => { const s = ${ROOT}?.querySelector('bc-plugin-settings'); return s ? [...s.querySelectorAll('input[type=checkbox]')].length : 0 })()`)) >= 3)
     await subTab(2)
     ok('sync panel present (sync tab)', await evalBool(`${ROOT}?.querySelector('bc-sync-panel')`))
 
-    // pre-cleanup: remove only OUR leftover sources (any 'E2E' name) — a
-    // user-configured source on this instance must survive the run
-    for (let guard = 0; guard < 6; guard++) {
-        const idx = await evalJs(`(() => { const cards = [...(${ROOT})?.querySelectorAll('.bc-sync-source') ?? []]; return cards.findIndex(c => /E2E/.test(c.textContent)) })()`)
-        if (idx === null || idx < 0) break
-        console.log('  (pre-cleanup: deleting leftover E2E source)')
-        await evalJs(`(() => { const cards = [...(${ROOT})?.querySelectorAll('.bc-sync-source')]; const bs = cards[${idx}]?.querySelectorAll('.bc-sync-source-actions .btn'); if (bs && bs[3]) bs[3].click(); return 'ok' })()`)
+    // pre-cleanup (config-driven): remove leftover E2E sources; the source
+    // tab has an always-visible delete button
+    for (let guard = 0; guard < 10; guard++) {
+        if (!/name:\s*E2E\b/.test(cfgText())) break
+        await evalJs(`(() => {
+            const tab = [...document.querySelectorAll('.bc-source-tab')].find(t => /E2E/.test(t.textContent))
+            tab?.querySelector('.bc-source-tab-del')?.click()
+            return 'ok'
+        })()`)
         const m = await waitModal(6000)
-        if (!m) break
-        await clickModalButton(0) // Delete
+        if (!m) { await sleep(1000); continue }
+        await clickModalButtonN(0) // Delete (danger button is FIRST)
         await modalGone()
-        await sleep(600)
+        await sleep(700)
     }
+    ok('pre-cleanup removed stale E2E sources', !/name:\s*E2E\b/.test(cfgText()))
 
     // -------------------------------------------------- raw editor roundtrip ---
     await subTab(1)
     const before = cfgText()
     const ta = '.bc-editors textarea.bc-yaml'
     ok('editor shows config.yaml', (await evalJs(`${ROOT}?.querySelector('${ta}')?.value.includes('terminal')`)) === true)
-    await setInput(ta, before + '\nbcE2eMarker: 42\n')
-    await click('.bc-section-head .btn-primary') // Save and apply
+    await evalJs(`(() => { const el = ${ROOT}.querySelector('${ta}'); el.value = ${JSON.stringify(before + '\nbcE2eMarker: 42\n')}; el.dispatchEvent(new Event('input', { bubbles: true })); return 'ok' })()`)
+    await click('.bc-section-head .btn-primary')
     ok('raw save lands on disk', !!(await poll(() => Promise.resolve(/bcE2eMarker:\s*42/.test(cfgText())))))
-    // The changed$ reload races any immediate re-edit (it resets the textarea
-    // and clears dirty, making the save click a no-op). Re-assert our input
-    // until it sticks: textarea lacks the marker AND the save button is
-    // enabled — then click.
     let restored2 = false
     for (let i = 0; i < 10 && !restored2; i++) {
-        await setInput(ta, before)
+        await evalJs(`(() => { const el = ${ROOT}.querySelector('${ta}'); el.value = ${JSON.stringify(before)}; el.dispatchEvent(new Event('input', { bubbles: true })); return 'ok' })()`)
         await sleep(250)
         restored2 = !!(await evalJs(`(() => { const b = ${ROOT}?.querySelector('.bc-section-head .btn-primary'); const el = ${ROOT}?.querySelector('${ta}'); return b && !b.disabled && el && !el.value.includes('bcE2eMarker') ? true : false })()`))
     }
@@ -340,153 +333,308 @@ async function main_ () {
     ok('hide native config-file pill', await poll(async () => (await isHidden(liFile)) === true))
     await evalJs(`${checks}[1].click()`)
     ok('hide native config-sync pill', await poll(async () => (await isHidden(liSync)) === true))
-    // restore one at a time — both writes are read-modify-write on the whole
-    // config, so firing them back-to-back races and loses one update
     await evalJs(`${checks}[0].click()`)
     ok('restore native config-file pill', await poll(async () => (await isHidden(liFile)) === false))
     await evalJs(`${checks}[1].click()`)
     ok('toggles restore pills', await poll(async () => (await isHidden(liSync)) === false))
 
-    // --------------------------------------------------------- add source ---
+    // ------------------------------------------------------ add sync source ---
     await subTab(2)
-    await click('.bc-sync-head-actions .btn-primary') // Add source
-    await sleep(200)
+    await evalJs(`(() => { const r = ${ROOT}; (r?.querySelector('.bc-sync-add') ?? r?.querySelector('.bc-sync-empty .btn-primary'))?.click(); return 'ok' })()`)
+    await sleep(300)
     await evalJs(`(() => { const els = ${ROOT}.querySelectorAll('.bc-sync-editor input[type=text]');
-        els[0].value = 'E2E local'; els[0].dispatchEvent(new Event('input', {bubbles:true}));
+        els[0].value = ${JSON.stringify(SRC_NAME)}; els[0].dispatchEvent(new Event('input', {bubbles:true}));
         els[1].value = ${JSON.stringify(LOCAL_URL)}; els[1].dispatchEvent(new Event('input', {bubbles:true}));
         els[2].value = 'main'; els[2].dispatchEvent(new Event('input', {bubbles:true}));
         els[3].value = 'tabby-config.json'; els[3].dispatchEvent(new Event('input', {bubbles:true}));
         return 'set' })()`)
-    await click('.bc-sync-editor-actions .btn-primary') // Save source
-    ok('source card appears', !!(await poll(() => evalBool(`${ROOT}?.querySelector('.bc-sync-source')`))))
-    ok('source persisted to config.yaml', !!(await poll(() => Promise.resolve(cfgText().includes('E2E local')))))
+    await click('.bc-sync-editor-actions .btn-primary')
+    ok('source tab appears', !!(await poll(() => evalJs(`!!${SRCTAB(SRC_NAME)}`))))
+    ok('source persisted to config.yaml', !!(await poll(() => Promise.resolve(cfgText().includes(SRC_NAME)))))
 
-    // ------------------------------------------------------------- pull main ---
-    if (GITHUB_MODE) {
-        ok('github.com reachable (window)', await waitForGitHub())
-    }
-    const pullTitle = await act(0, 0, /Pull config package|拉取配置包/)
-    ok('pull confirm modal shown', !!pullTitle)
-    ok('pull merge applies package', !!(await poll(() => Promise.resolve(new RegExp(`showRecentProfiles:\\s*${RUN_VAL}\\b`).test(cfgText())), 60000)))
-    ok('pull id-merges profiles', new RegExp(`name:\\s*BC E2E ${RUN_VAL}\\b`).test(cfgText()))
-    ok('lastPull recorded', await poll(() => evalJs(`(() => { const c = ${LASTCARD}; const first = c?.querySelector('.bc-sync-source-last span'); return !!first && /Last pull|上次拉取/.test(first.textContent) && !/never|从未/.test(first.textContent) })()`)))
-    ok('sync log records the pull', !!(await poll(() => logText().then(t => /applied package/.test(t) ? true : null))))
+    // ------------------------------------------- browser: bootstrap + graph ---
+    ok('browser selected + bootstrapped', await selectSource(SRC_NAME))
+    ok('commit graph rendered (one dot per row + lane segments)', !!(await poll(() => evalJs(`(() => { const b = ${BROWSER}; const rows = b?.querySelectorAll('.bc-row') ?? []; const dots = b?.querySelectorAll('circle.bc-dot') ?? []; const segs = b?.querySelectorAll('path.bc-seg') ?? []; return rows.length >= 1 && dots.length === rows.length && segs.length >= 1 })()`), 30000)))
+    ok('graph row shows adopted head', await poll(() => evalJs(`(() => { const b = ${BROWSER}; const rows = [...(b?.querySelectorAll('.bc-row-msg') ?? [])]; return rows.some(r => /(Adopt|E2E reseed)/.test(r.textContent)) })()`)))
+    // branch picker (Git Graph style dropdown) lists local + remote
+    await evalJs(`(() => { const b = ${BROWSER}; b?.querySelector('.bc-branch-current')?.click(); return 'ok' })()`)
+    ok('branch menu lists local + remote', !!(await poll(() => evalJs(`(() => { const b = ${BROWSER}; const names = [...(b?.querySelectorAll('.bc-branch-item-name') ?? [])].map(n => n.textContent.trim()); return names.includes('main') && names.includes('origin/main') })()`))))
+    await evalJs(`(() => { document.body.click(); return 'ok' })()`)
 
-    // ------------------------------------------------- debug-level logging ---
-    // debug lines are logged regardless, but hidden by default (CSS filter)
-    const dbgLine = `document.querySelector('.bc-sync-log-line.debug')`
-    const dbgShown = () => evalJs(`(() => { const el = ${dbgLine}; return el ? getComputedStyle(el).display !== 'none' : null })()`)
-    ok('debug lines exist (pull produced them)', !!(await poll(() => evalBool(dbgLine))))
-    ok('debug lines hidden by default', await poll(async () => (await dbgShown()) === false))
-    await evalJs(`(() => { const el = ${ROOT}?.querySelector('.bc-sync-log-head input[type=checkbox]'); if (el) el.click(); return 'ok' })()`)
-    ok('debug toggle shows them', await poll(async () => (await dbgShown()) === true))
-    ok('debug request lines logged', !!(await poll(() => evalJs(`(() => { const lines = [...document.querySelectorAll('.bc-sync-log-line.debug')].map(l => l.textContent); return lines.some(t => /info\\/refs|git-upload-pack|fetch done/.test(t)) })()`))))
-    await evalJs(`(() => { const el = ${ROOT}?.querySelector('.bc-sync-log-head input[type=checkbox]'); if (el) el.click(); return 'ok' })()`)
-    ok('debug toggle hides them again', await poll(async () => (await dbgShown()) === false))
+    // commit detail: click a graph row (once rows are rendered) → detail panel
+    await poll(() => evalJs(`(() => { const b = ${BROWSER}; return (b?.querySelectorAll('.bc-row') ?? []).length >= 1 ? true : null })()`), 15000)
+    await evalJs(`(() => { const b = ${BROWSER}; (b?.querySelectorAll('.bc-row') ?? [])[0]?.click(); return 'ok' })()`)
+    ok('commit detail panel opens', await poll(() => evalJs(`(() => { const b = ${BROWSER}; return b?.querySelector('.bc-detail-bar-msg') ?? null })()`).then(v => !!v)))
 
-    // ------------------------------------------------------------- push main ---
+    // The detail pane must show the diff of the commit that is SELECTED, and
+    // must not get stuck in "Loading diff…" when rows are clicked faster than
+    // the engine resolves (stale-response race — previously 18/20 rapid
+    // double-clicks left the pane loading forever).
+    const detailState = () => evalJs(`(() => {
+        const b = ${BROWSER}; const d = b?.querySelector('.bc-detail')
+        return {
+            selectedHash: (b?.querySelector('.bc-row.selected .bc-row-hash')?.textContent ?? '').trim(),
+            detailHash: (d?.querySelector('.bc-detail-bar-hash')?.textContent ?? '').trim(),
+            loading: !!d?.querySelector('.bc-detail-loading'),
+            lines: d?.querySelectorAll('.bc-diff-line').length,
+            noDiff: !!d?.querySelector('.bc-detail-nodiff'),
+        }
+    })()`)
+    // a commit with a real config change must render line-level diff lines
+    const withDiff = await evalJs(`(() => { const rows = [...document.querySelectorAll('bc-git-browser .bc-row')]; const i = rows.findIndex(r => /update config package|Adopt|E2E reseed/.test(r.querySelector('.bc-row-msg')?.textContent ?? '')); return i < 0 ? 1 : i })()`)
+    await evalJs(`(() => { document.querySelectorAll('bc-git-browser .bc-row')[${withDiff}].click(); return 'ok' })()`)
+    ok('detail renders line-level diff for a config commit', await poll(() => detailState().then(st => !st.loading && (st.lines > 0 || st.noDiff) ? true : null), 8000))
+
+    // fetch
+    browserOp('fetch')
+    await sleep(2500)
+
+    // ------------------------------------------- commit + push ---
     await subTab(1)
-    await setInput(ta, cfgText() + '\nbcE2ePush: ok\n')
+    await evalJs(`(() => { const el = ${ROOT}.querySelector('${ta}'); el.value = ${JSON.stringify(cfgText() + '\nbcE2ePush: ok\n')}; el.dispatchEvent(new Event('input', { bubbles: true })); return 'ok' })()`)
     await click('.bc-section-head .btn-primary')
     await poll(() => Promise.resolve(/bcE2ePush:\s*ok/.test(cfgText())))
     await subTab(2)
-    const pushTitle = await act(1, 0, /Push config package|推送配置包/)
-    ok('push confirm modal shown', !!pushTitle)
-    ok('push updates remote main', !!(await poll(async () => (await remoteContent('main')).includes('bcE2ePush'), 60000)))
-    ok('lastPush recorded', await poll(() => evalJs(`(() => { const c = ${LASTCARD}; const spans = [...(c?.querySelectorAll('.bc-sync-source-last span') ?? [])]; const push = spans.find(s => /Last push|上次推送/.test(s.textContent)); return !!push && !/never|从未/.test(push.textContent) })()`)))
-    const pushedContent = await remoteContent('main')
-    ok('push excludes betterConfiger section', !!pushedContent && !pushedContent.includes('betterConfiger'))
-    ok('sync log records the push', !!(await poll(() => logText().then(t => /pushed main -> origin/.test(t) ? true : null))))
+    let m = await opModal('commit')
+    ok('commit modal shown with diff', !!m && /bc-modal-commit/.test(m.cls), JSON.stringify(m))
+    ok('commit diff lists changed section', !!(await evalJs(`(() => { const mm = [...document.querySelectorAll('.bc-modal-commit')].filter(e => e.offsetParent !== null).pop(); return mm && /bcE2ePush/.test(mm.textContent) })()`)))
+    ok('commit diff has line-level add', !!(await evalJs(`(() => { const mm = [...document.querySelectorAll('.bc-modal-commit')].filter(e => e.offsetParent !== null).pop(); return mm && mm.querySelector('.bc-diff-line.add') })()`)))
+    await setModalInput('.bc-modal-field input[type=text]', `E2E commit ${RUN_VAL}`)
+    await clickModalPrimary()
+    await modalGone()
+    ok('commit recorded, ahead badge', await poll(() => evalJs(`(() => { const b = ${BROWSER}; return b?.querySelector('.bc-branch-ab .ahead') })()`).then(v => !!v)))
 
-    // --------------------------------------- push after remote divergence ---
-    // "Remote wins" semantics: someone else pushed different content; our
-    // push must land ON TOP of that history (fast-forward), not be rejected
-    // into a force-push. The diverged commit must survive in the history and
-    // the package content must end up ours (last writer wins, per file).
-    if (GITHUB_MODE) {
-        ok('github.com reachable (window 2)', await waitForGitHub())
-    }
-    const divergePkg = JSON.stringify({
+    m = await opModal('push')
+    ok('push modal shows outgoing commit', !!m && /bc-modal-push/.test(m.cls) && !!(await evalJs(`(() => { const mm = [...document.querySelectorAll('.bc-modal-push')].filter(e => e.offsetParent !== null).pop(); return mm && /E2E commit/.test(mm.textContent) })()`)), JSON.stringify(m))
+    await clickModalPrimary()
+    await modalGone()
+    ok('push lands on remote', !!(await poll(async () => (await remoteContent('main')).includes('bcE2ePush'), 30000)))
+    ok('ahead badge cleared', await poll(() => evalJs(`(() => { const b = ${BROWSER}; return !b?.querySelector('.bc-branch-ab .ahead') })()`)))
+
+    // --------------------------------------- divergence + clean merge ---
+    await putContent('main', JSON.stringify({
         format: 'tabby-config-package', version: 1, kind: 'full',
         exportedAt: new Date().toISOString(), tabbyVersion: '1.0.237',
-        modules: { marker: 'diverged-remotely' }, excluded: [],
-    }, null, 2)
-    await putContent('main', divergePkg, 'diverge')
-    const push2Title = await act(1, 0, /Push config package|推送配置包/)
-    ok('push-2 confirm modal shown', !!push2Title)
-    ok('push after divergence lands (rebased on top)', !!(await poll(async () => (await remoteContent('main')).includes('bcE2ePush'), 60000)))
-    if (!GITHUB_MODE) {
-        const log = await gitOp(['log', '--oneline', 'origin/main']).then(r => r.stdout)
-        ok('diverged commit preserved in history', /diverge/.test(log) && /BetterConfiger: update config package/.test(log), log.trim().split('\n').slice(0, 3).join(' | '))
-    }
-    ok('sync log records push-2', !!(await poll(() => logText().then(t => (/pushed main -> origin/.test(t) ? t.split(/pushed main -> origin/).length : 0) >= 3 ? true : null))))
+        modules: {
+            terminal: { showRecentProfiles: RUN_VAL }, // == base (untouched)
+            profiles: [{ id: 'bc-e2e-profile', name: `BC E2E ${RUN_VAL}`, type: 'local', options: {}, group: 'bc-e2e' }],
+            bcE2eRemoteSide: RUN_VAL_B, // brand-new section → clean merge
+        },
+        excluded: [],
+    }, null, 2), `remote diverge ${RUN_VAL_B}`)
+    browserOp('fetch')
+    ok('behind badge after divergence', await poll(() => evalJs(`(() => { const b = ${BROWSER}; return b?.querySelector('.bc-branch-ab .behind') })()`).then(v => !!v)))
+    m = await opModal('merge')
+    ok('merge modal shown', !!m && /bc-modal-merge/.test(m.cls), JSON.stringify(m))
+    await setModalSelect('select', 'origin/main')
+    await clickModalPrimary()
+    await modalGone()
+    ok('clean merge committed (log)', !!(await poll(() => logText().then(t => /merged origin\/main/.test(t) ? true : null))))
 
-    // --------------------------------------------- branch distribution (machine-a) ---
-    await putContent('machine-a', pkgFor(RUN_VAL_A, `BC E2E ${RUN_VAL_A}`), `machine-a override ${RUN_VAL_A}`)
-    // open the editor (retry — same click race as the action buttons)
-    let editorOpen = false
-    for (let i = 0; i < 4 && !editorOpen; i++) {
-        await evalJs(`(() => { const bs = ${LASTCARD}?.querySelectorAll('.bc-sync-source-actions .btn'); if (bs && bs[2]) bs[2].click(); return 'ok' })()`) // Edit
-        editorOpen = !!(await poll(() => evalBool(`${ROOT}?.querySelector('.bc-sync-editor')`), 4000, 300))
+    // Rapid double clicks across different rows. The assertion is about
+    // LATENCY, not the eventual state: the pre-fix race left the pane in
+    // "Loading diff…" until some unrelated event re-ran change detection, so
+    // a generous wait would always "pass" once later test steps poked the
+    // page. The engine resolves a selection in ~8 ms; anything not settled
+    // well inside this window is the bug.
+    let settled = 0
+    const rounds = 8
+    const SETTLE_MS = 150
+    for (let r = 0; r < rounds; r++) {
+        const n = await evalJs(`document.querySelectorAll('bc-git-browser .bc-row').length`)
+        if (n < 3) { settled++; continue } // not enough history yet
+        const a = 1 + (r % (n - 1))
+        const b2 = 1 + ((r + 1) % (n - 1))
+        if (a === b2) { settled++; continue }
+        await evalJs(`(() => { const rows = document.querySelectorAll('bc-git-browser .bc-row'); rows[${a}].click(); rows[${b2}].click(); return 'ok' })()`)
+        // ONE sample, taken inside the window — no polling that could mask a stall
+        await sleep(SETTLE_MS)
+        const st = await detailState()
+        if (!st.loading && st.selectedHash === st.detailHash && st.selectedHash !== '' && (st.lines > 0 || st.noDiff)) settled++
     }
-    ok('edit opens source editor', editorOpen)
-    await evalJs(`(() => { const els = ${ROOT}.querySelectorAll('.bc-sync-editor input[type=text]'); els[2].value = 'machine-a'; els[2].dispatchEvent(new Event('input', {bubbles:true})); return 'set' })()`)
-    await click('.bc-sync-editor-actions .btn-primary')
-    await poll(() => evalJs(`${LASTCARD}?.textContent.includes('machine-a')`))
-    const branchTitle = await act(0, 0, /Pull config package|拉取配置包/)
-    ok('branch pull confirm modal shown', !!branchTitle)
-    ok('branch switch pull merges machine-a', !!(await poll(() => Promise.resolve(new RegExp(`showRecentProfiles:\\s*${RUN_VAL_A}\\b`).test(cfgText())), 60000)))
+    ok(`rapid ${rounds}x double-click settles within ${SETTLE_MS}ms each`, settled === rounds, `${settled}/${rounds}`)
+
+    // --------------------------------------------- conflict merge + resolve ---
+    await subTab(1)
+    for (let i = 0; i < 10; i++) {
+        await evalJs(`(() => { const el = ${ROOT}.querySelector('${ta}'); el.value = ${JSON.stringify(cfgText() + '\nbcE2eLocalSide: ' + RUN_VAL_C + '\n')}; el.dispatchEvent(new Event('input', { bubbles: true })); return 'ok' })()`)
+        await sleep(250)
+        const sticks = !!(await evalJs(`(() => { const b = ${ROOT}?.querySelector('.bc-section-head .btn-primary'); const el = ${ROOT}?.querySelector('${ta}'); return b && !b.disabled && el && el.value.includes('bcE2eLocalSide') ? true : false })()`))
+        if (sticks) break
+    }
+    await click('.bc-section-head .btn-primary')
+    await poll(() => Promise.resolve(new RegExp(`bcE2eLocalSide:\\s*${RUN_VAL_C}`).test(cfgText())))
+    await subTab(2)
+    m = await opModal('commit')
+    await setModalInput('.bc-modal-field input[type=text]', 'local side change')
+    await clickModalPrimary()
+    await modalGone()
+    await sleep(500)
+    const conflictContent = JSON.stringify({
+        format: 'tabby-config-package', version: 1, kind: 'full',
+        exportedAt: new Date().toISOString(), tabbyVersion: '1.0.237',
+        modules: { terminal: { showRecentProfiles: RUN_VAL_B }, bcE2eLocalSide: RUN_VAL_C + 1 },
+        excluded: [],
+    }, null, 2)
+    await putContent('main', conflictContent, `conflict commit ${RUN_VAL_C}`)
+    browserOp('fetch')
+    await poll(() => evalJs(`(() => { const b = ${BROWSER}; return b?.querySelector('.bc-branch-ab .behind') ?? null })()`).then(v => !!v), 20000)
+    await sleep(1500) // toolbar re-render settle
+    m = await opModal('merge')
+    await setModalSelect('select', 'origin/main')
+    await clickModalPrimary()
+    const conf = await waitUntil(async () => {
+        const info = await modalInfo()
+        return info && /bc-modal-conflicts/.test(info.cls) ? info : null
+    }, 25000)
+    if (!conf) {
+        const tail = String(await logText())
+        console.log('      [cf] log tail:', tail.split('\n').slice(-4).join(' | ').slice(0, 300))
+    }
+    ok('conflict modal shown with side diff', !!conf && !!(await evalJs(`(() => { const mm = [...document.querySelectorAll('.bc-modal-conflicts')].filter(e => e.offsetParent !== null).pop(); return mm && /bcE2eLocalSide/.test(mm.textContent) && mm.querySelector('.bc-diff-line') })()`)), JSON.stringify(conf))
+    if (conf) {
+        await evalJs(`(() => { const mm = [...document.querySelectorAll('.bc-modal-conflicts')].filter(e => e.offsetParent !== null).pop(); [...mm.querySelectorAll('.bc-conflict-row')].forEach(row => { const btns = row.querySelectorAll('.bc-conflict-choices button'); if (btns[1]) btns[1].click() }); return 'ok' })()`)
+        await clickModalPrimary()
+        await modalGone()
+        ok('merge commit after resolution (log)', !!(await poll(() => logText().then(t => /merge committed/.test(t) ? true : null))))
+    }
+
+    // ---------------------------------------------------------- apply to config ---
+    m = await opModal('apply')
+    ok('apply modal shown with diff', !!m && /bc-modal-apply/.test(m.cls), JSON.stringify(m))
+    await clickModalPrimary()
+    await modalGone()
+    ok('apply writes resolved value to config', !!(await poll(() => Promise.resolve(new RegExp(`bcE2eLocalSide:\\s*${RUN_VAL_C + 1}`).test(cfgText())))))
+
+    // ---------------------------------------------------------- update & apply ---
+    // (on MAIN, before the branch/reset section changes the workspace state)
+    await putContent('main', pkgFor(RUN_VAL_A, `BC E2E ${RUN_VAL_A}`), `machine-a style update ${RUN_VAL_A}`)
+    browserOp('update')
+    ok('update&apply lands new value', !!(await poll(() => Promise.resolve(new RegExp(`showRecentProfiles:\\s*${RUN_VAL_A}`).test(cfgText())), 60000)))
+
+    // --------------------------------------------------- branch + soft reset ---
+    // open the branch manager from the picker ("+ New branch name")
+    const openBranchManager = async () => {
+        for (let i = 0; i < 4; i++) {
+            if (await modalInfo()) break
+            await evalJs(`(() => { const b = ${BROWSER}; if (!b?.querySelector('.bc-branch-menu')) b?.querySelector('.bc-branch-current')?.click(); return 'ok' })()`)
+            await sleep(300)
+            await evalJs(`(() => { const b = ${BROWSER}; [...(b?.querySelectorAll('.bc-branch-menu-title .bc-link-btn') ?? [])][0]?.click(); return 'ok' })()`)
+            if (await waitUntil(() => modalInfo(), 3000)) break
+        }
+        return modalInfo()
+    }
+    m = await openBranchManager()
+    ok('branch modal shown', !!m && /bc-modal-branch/.test(m.cls), JSON.stringify(m))
+    await setModalInput('.bc-modal-field input[type=text]', 'feature-x')
+    await setModalSelect('select', 'origin/main')
+    await clickModalPrimary()
+    await modalGone()
+    await sleep(800)
+    await evalJs(`(() => { const b = ${BROWSER}; b?.querySelector('.bc-branch-current')?.click(); return 'ok' })()`)
+    ok('branch created and listed in picker', await poll(() => evalJs(`(() => { const b = ${BROWSER}; return [...(b?.querySelectorAll('.bc-branch-item-name') ?? [])].some(n => n.textContent.trim() === 'feature-x') })()`)))
+    // the picker menu is still open — click feature-x to switch to it
+    await evalJs(`(() => { const b = ${BROWSER}; const item = [...(b?.querySelectorAll('.bc-branch-item') ?? [])].find(r => (r.querySelector('.bc-branch-item-name')?.textContent ?? '').trim() === 'feature-x'); item?.click(); return 'ok' })()`)
+    ok('switched to feature-x (branch picker shows it)', await poll(() => evalJs(`(() => { const b = ${BROWSER}; return (b?.querySelector('.bc-branch-current-name')?.textContent ?? '').trim() === 'feature-x' })()`)))
+    await sleep(1500) // let the browser reload settle after the switch
+    // soft reset to an earlier commit from the bottom detail bar
+    await poll(() => evalJs(`(() => { const b = ${BROWSER}; return (b?.querySelectorAll('.bc-row') ?? []).length >= 2 ? true : null })()`), 15000)
+    let resetOpened = false
+    for (let i = 0; i < 5 && !resetOpened; i++) {
+        await evalJs(`(() => { const b = ${BROWSER}; const rows = [...(b?.querySelectorAll('.bc-row') ?? [])]; if (rows[1]) rows[1].click(); return 'ok' })()`)
+        await sleep(1500)
+        resetOpened = !!(await evalJs(`(() => { const b = ${BROWSER}; const bar = b?.querySelector('.bc-detail-bar'); return bar && [...bar.querySelectorAll('.bc-link-btn')].some(x => /Reset here|重置到此/.test(x.textContent)) ? true : false })()`))
+    }
+    ok('reset button appears in detail', resetOpened)
+    await evalJs(`(() => { const b = ${BROWSER}; const bar = b?.querySelector('.bc-detail-bar'); [...(bar?.querySelectorAll('.bc-link-btn') ?? [])].find(x => /Reset here|重置到此/.test(x.textContent))?.click(); return 'ok' })()`)
+    const resetModal = await waitModal(8000)
+    ok('reset confirm modal shown', !!resetModal && /bc-modal-reset/.test(resetModal.cls))
+    await clickModalPrimary()
+    await modalGone()
+    ok('soft reset recorded (log)', !!(await poll(() => logText().then(t => /reset feature-x to/.test(t) ? true : null))))
+    // delete guard: the CURRENT branch row has no delete button
+    m = await openBranchManager()
+    const delBlocked = await evalJs(`(() => { const mm = [...document.querySelectorAll('.bc-modal-branch')].filter(e => e.offsetParent !== null).pop(); const row = [...mm.querySelectorAll('.bc-branch-row')].find(r => /feature-x/.test(r.textContent) && /(current|当前)/.test(r.textContent)); return row ? row.querySelectorAll('.bc-branch-actions button').length : -1 })()`)
+    ok('current branch has no delete button', delBlocked === 0, String(delBlocked))
+    await clickModalButtonN(0) // cancel
+
+    // ------------------------------------------------------- debug-level log ---
+    const logLevels = async () => evalJs(`(() => { try { return (window.__betterConfigerLog?.entries ?? []).map(e => e.level) } catch { return [] } })()`)
+    const levels = await logLevels()
+    ok('debug lines recorded by the engine', levels.filter(l => l === 'debug').length >= 3, JSON.stringify(levels.reduce((m, l) => ({ ...m, [l]: (m[l] ?? 0) + 1 }), {})))
+    // the window is collapsed by default; expanding it shows the lines and the
+    // debug toggle filters them
+    await evalJs(`(() => { const r = ${ROOT}; r?.querySelector('.bc-sync-log-head')?.click(); return 'ok' })()`)
+    ok('log window expands', await poll(() => evalBool(`(() => { const r = ${ROOT}; return (r?.querySelectorAll('.bc-sync-log-line') ?? []).length >= 1 })()`)))
+    const dbgLine = `(() => { const r = ${ROOT}; return [...(r?.querySelectorAll('.bc-sync-log-line.debug') ?? [])][0] ?? null })()`
+    const dbgShown = () => evalJs(`(() => { const el = ${dbgLine}; return el ? getComputedStyle(el).display !== 'none' : null })()`)
+    ok('debug lines hidden by default', await poll(async () => (await dbgShown()) === false))
+    await evalJs(`(() => { const el = ${ROOT}?.querySelector('.bc-sync-log-head input[type=checkbox]'); if (el && !el.checked) el.click(); return 'ok' })()`)
+    ok('debug toggle shows them', await poll(async () => (await dbgShown()) === true))
+    await evalJs(`(() => { const el = ${ROOT}?.querySelector('.bc-sync-log-head input[type=checkbox]'); if (el && el.checked) el.click(); return 'ok' })()`)
+    await evalJs(`(() => { const r = ${ROOT}; r?.querySelector('.bc-sync-log-head')?.click(); return 'ok' })()`)
+
+    // ------------------------------------------------ cross-window live sync ---
+    const XWIN = `bcXwin${RUN_VAL}`
+    // let the app's pending saves settle first — a delayed app save would
+    // overwrite our external write and the marker would never be seen
+    await sleep(2500)
+    for (let attempt = 0; attempt < 3; attempt++) {
+        let withMarker = cfgText().replace(/^language:.*\n/m, `language: null\n${XWIN}: 1\n`)
+        if (!withMarker.includes(XWIN)) {
+            withMarker = cfgText() + `\n${XWIN}: 1\n`
+        }
+        fs.writeFileSync(CFG, withMarker, 'utf8')
+        await sleep(600)
+        if (cfgText().includes(XWIN)) break // marker survived the save race
+    }
+    const xwinSeen = await poll(() => evalJs(`(() => { try { return window.__betterConfigerMap.rawStore()[${JSON.stringify(XWIN)}] !== undefined ? true : null } catch (e) { return 'err ' + e.message } })()`), 8000)
+    if (!xwinSeen) {
+        console.log('      [xwin] marker on disk:', withMarker.includes(XWIN), '| rawStore keys:', await evalJs(`(() => { try { return Object.keys(window.__betterConfigerMap.rawStore()).filter(k => k.startsWith('bcX')).join(',') || '(none)' } catch (e) { return 'err ' + e.message } })()`))
+    }
+    ok('external config write picked up live', xwinSeen === true)
+    fs.writeFileSync(CFG, cfgText().replace(new RegExp(`^${XWIN}: 1.*\\n`, 'm'), ''), 'utf8')
+    ok('external config removal picked up', !!(await poll(() => evalJs(`(() => { try { return window.__betterConfigerMap.rawStore()[${JSON.stringify(XWIN)}] === undefined ? true : null } catch { return null } })()`), 8000)))
 
     // ------------------------------------------------------------- cleanup ---
     ok('sync log file persisted', await (async () => {
         try {
             const f = 'D:/Env/TabbyEnv/instances/bc/data/better-configer/sync.log'
             const text = fs.readFileSync(f, 'utf8')
-            return /pushed/.test(text) && /DEBUG/.test(text)
+            return /pushed|merged/.test(text) && /DEBUG/.test(text)
         } catch {
             return false
         }
     })())
 
-    // ------------------------------------------- network retry on a dead port ---
-    // loopback bypass means this hits the (closed) port directly; the engine
-    // must retry twice then surface the final error in the log
-    await click('.bc-sync-head-actions .btn-primary') // Add source
-    await sleep(200)
+    // dead-port retry source
+    await evalJs(`(() => { const r = ${ROOT}; (r?.querySelector('.bc-sync-add') ?? r?.querySelector('.bc-sync-empty .btn-primary'))?.click(); return 'ok' })()`)
+    await sleep(300)
     await evalJs(`(() => { const els = ${ROOT}.querySelectorAll('.bc-sync-editor input[type=text]');
-        els[0].value = 'E2E dead'; els[0].dispatchEvent(new Event('input', {bubbles:true}));
+        els[0].value = ${JSON.stringify('E2E dead ' + RUN_VAL)}; els[0].dispatchEvent(new Event('input', {bubbles:true}));
         els[1].value = 'http://127.0.0.1:9/repo.git'; els[1].dispatchEvent(new Event('input', {bubbles:true}));
         els[2].value = 'main'; els[2].dispatchEvent(new Event('input', {bubbles:true}));
         els[3].value = 'tabby-config.json'; els[3].dispatchEvent(new Event('input', {bubbles:true}));
         return 'set' })()`)
     await click('.bc-sync-editor-actions .btn-primary')
-    await poll(() => evalBool(`${ROOT}?.querySelector('.bc-sync-source:last-child')`))
-    // the pull errors BEFORE any confirm (fetch fails) — one click is enough;
-    // the retries happen engine-side
-    await evalJs(`(() => { const bs = ${LASTCARD}?.querySelectorAll('.bc-sync-source-actions .btn'); if (bs && bs[0]) bs[0].click(); return 'ok' })()`)
+    await poll(() => evalJs(`!!${SRCTAB('E2E dead ' + RUN_VAL)}`))
+    browserOp('fetch')
     ok('network retries logged', !!(await poll(() => logText().then(t => (t.match(/retrying/g) ?? []).length >= 2 ? true : null), 40000)))
-    ok('final network error logged with hint', !!(await poll(() => logText().then(t => /E2E dead:.*(ECONNREFUSED|connect)/.test(t) ? true : null), 20000)))
-    const delDead = await act(3, 0, /Delete this sync source|删除该同步源/)
-    ok('dead-port source deleted', !!delDead)
+    ok('final network error logged with hint', !!(await poll(() => logText().then(t => /E2E dead .*:.*(ECONNREFUSED|connect)/.test(t) ? true : null), 20000)))
 
-    // Final cleanup, driven by the CONFIG end-state instead of one fragile
-    // click: delete every remaining E2E source until config.yaml is clean.
-    // (Racing Angular row re-renders with single clicks double-fires deletes
-    // on already-gone ids; looping until the disk state is right is
-    // deterministic regardless of UI timing.)
+    // delete our sources (config end-state driven)
     let cleanupOk = false
-    for (let guard = 0; guard < 8 && !cleanupOk; guard++) {
+    for (let guard = 0; guard < 10 && !cleanupOk; guard++) {
         cleanupOk = !/name:\s*E2E\b/.test(cfgText())
         if (cleanupOk) break
-        const idx = await evalJs(`(() => { const cards = [...(${ROOT})?.querySelectorAll('.bc-sync-source') ?? []]; return cards.findIndex(c => /E2E/.test(c.textContent)) })()`)
-        if (idx === null || idx < 0) {
-            await sleep(1000) // DOM not caught up yet — wait for changed$
-            continue
-        }
-        await evalJs(`(() => { const cards = [...(${ROOT})?.querySelectorAll('.bc-sync-source')]; const bs = cards[${idx}]?.querySelectorAll('.bc-sync-source-actions .btn'); if (bs && bs[3]) bs[3].click(); return 'ok' })()`)
-        const m = await waitModal(6000)
-        if (m) {
-            await clickModalButton(0) // Delete
+        await evalJs(`(() => {
+            const tab = [...document.querySelectorAll('.bc-source-tab')].find(t => /E2E/.test(t.textContent))
+            tab?.querySelector('.bc-source-tab-del')?.click()
+            return 'ok'
+        })()`)
+        const mm = await waitModal(6000).catch(() => null)
+        if (mm) {
+            await clickModalButtonN(0) // Delete (danger first)
             await modalGone()
         }
         await sleep(800)
