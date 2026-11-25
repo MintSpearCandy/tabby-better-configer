@@ -1,16 +1,10 @@
 import { Component, OnInit, OnDestroy, ViewChild, ElementRef } from '@angular/core'
 import { BaseComponent, ConfigService, NotificationsService } from 'tabby-core'
 
-import { SyncSource, SyncSourcesService, PullPreview } from '../services/syncSources.service'
-import { PushRejectedError } from '../services/gitSync.service'
+import { SyncSource, SyncSourcesService } from '../services/syncSources.service'
 import { SyncLogService } from '../services/syncLog.service'
 import { BetterConfigerTranslator } from '../i18n'
 
-/** Per-source busy marker, so rows disable independently. */
-type Op = 'pull' | 'push' | 'branches'
-
-/** In-app confirmation modal (replaces the Electron native dialogs — those
- *  are modal to the whole window, unstyleable, and unreachable for E2E). */
 interface ConfirmButton {
     label: string
     className: string
@@ -23,6 +17,11 @@ interface ConfirmRequest {
     buttons: ConfirmButton[]
 }
 
+/**
+ * Shell of the Git sync sub-tab: source management (select / add / edit /
+ * delete), proxy box, sync log — with the IDE-style git browser
+ * (bc-git-browser) mounted for the selected source.
+ */
 @Component({
     selector: 'bc-sync-panel',
     template: require('./syncPanel.component.pug'),
@@ -32,15 +31,14 @@ export class SyncPanelComponent extends BaseComponent implements OnInit, OnDestr
     sources: SyncSource[] = []
     editing: SyncSource | null = null
     editingNew = false
-    /** token draft + vault choice for the editor form (not part of the source
-     *  until saved — the vault copy is written at save time) */
     draftToken = ''
     draftTokenInVault = true
     branches: string[] | null = null
     fetchingBranches = false
-    busy = new Map<string, Op>()
     proxyDraft = ''
     showDebugLog = false
+    /** collapsed by default — the commit list gets the space */
+    logCollapsed = true
     confirmReq: ConfirmRequest | null = null
     private confirmResolve: ((v: number | null) => void) | null = null
     @ViewChild('logScroll') logScrollEl: ElementRef | null = null
@@ -57,8 +55,6 @@ export class SyncPanelComponent extends BaseComponent implements OnInit, OnDestr
 
     ngOnInit (): void {
         this.reload()
-        // external writes (our own pull/push persist lastPull/lastPush; the
-        // raw editor on the same page) refresh the list unless mid-edit
         this.subscribeUntilDestroyed(this.config.changed$, () => {
             if (!this.editing) {
                 this.reload()
@@ -69,7 +65,7 @@ export class SyncPanelComponent extends BaseComponent implements OnInit, OnDestr
     }
 
     ngOnDestroy (): void {
-        this.pickConfirm(null) // unblock any pending confirmation
+        this.pickConfirm(null)
         super.ngOnDestroy()
     }
 
@@ -77,23 +73,23 @@ export class SyncPanelComponent extends BaseComponent implements OnInit, OnDestr
         this.sources = this.sync.sources()
         this.proxyDraft = this.sync.proxyUrl()
         this.showDebugLog = this.sync.logDebug()
-    }
-
-    async toggleDebugLog (value: boolean): Promise<void> {
-        this.showDebugLog = value
-        try {
-            await this.sync.setLogDebug(value)
-        } catch (e: any) {
-            this.notifications.error(`${this.t.t('betterConfiger.sync.failed')}: ${e?.message ?? e}`)
+        if (this.sync.expandedWsId && !this.sources.some(s => s.id === this.sync.expandedWsId)) {
+            this.sync.expandedWsId = null
+        }
+        if (!this.sync.expandedWsId && this.sources.length && !this.editing) {
+            this.sync.expandedWsId = this.sources[0].id
         }
     }
 
-    isBusy (id: string, op: Op): boolean {
-        return this.busy.get(id) === op
+    get selectedSource (): SyncSource | null {
+        return this.sources.find(s => s.id === this.sync.expandedWsId) ?? null
     }
 
-    anyBusy (id: string): boolean {
-        return this.busy.has(id)
+    selectSource (source: SyncSource): void {
+        if (this.editing) {
+            return
+        }
+        this.sync.expandedWsId = source.id
     }
 
     // ------------------------------------------------------- confirm modal ----
@@ -112,7 +108,37 @@ export class SyncPanelComponent extends BaseComponent implements OnInit, OnDestr
         resolve?.(value)
     }
 
-    // ------------------------------------------------------------- editing ----
+    // -------------------------------------------------------------- proxy ----
+
+    async saveProxy (): Promise<void> {
+        try {
+            await this.sync.setProxyUrl(this.proxyDraft)
+        } catch (e: any) {
+            this.notifications.error(`${this.t.t('betterConfiger.sync.failed')}: ${e?.message ?? e}`)
+        }
+    }
+
+    get proxyLooksWrong (): boolean {
+        const v = this.proxyDraft.trim()
+        if (!v) {
+            return false
+        }
+        if (!/^https?:\/\//i.test(v)) {
+            return true
+        }
+        return /\.git(\?|$)/i.test(v) || /github\.com|gitlab|gitee/i.test(v)
+    }
+
+    async toggleDebugLog (value: boolean): Promise<void> {
+        this.showDebugLog = value
+        try {
+            await this.sync.setLogDebug(value)
+        } catch (e: any) {
+            this.notifications.error(`${this.t.t('betterConfiger.sync.failed')}: ${e?.message ?? e}`)
+        }
+    }
+
+    // ------------------------------------------------------------- editor ----
 
     startEdit (source?: SyncSource): void {
         this.branches = null
@@ -153,6 +179,7 @@ export class SyncPanelComponent extends BaseComponent implements OnInit, OnDestr
             }
             await this.sync.saveSource(src)
             this.editing = null
+            this.sync.expandedWsId = src.id
             this.reload()
         } catch (e: any) {
             this.notifications.error(`${this.t.t('betterConfiger.sync.failed')}: ${e?.message ?? e}`)
@@ -162,7 +189,7 @@ export class SyncPanelComponent extends BaseComponent implements OnInit, OnDestr
     async deleteSource (source: SyncSource): Promise<void> {
         const r = await this.confirm({
             title: this.t.t('betterConfiger.sync.deleteConfirm'),
-            detail: `${source.name}\n${source.url} (${source.branch})`,
+            detail: `${source.name}\n${source.url} (origin/${source.branch})`,
             buttons: [
                 { label: this.t.t('betterConfiger.sync.delete'), className: 'btn btn-danger btn-sm', value: 0 },
                 { label: this.t.t('betterConfiger.editor.cancel'), className: 'btn btn-secondary btn-sm', value: 1 },
@@ -172,6 +199,10 @@ export class SyncPanelComponent extends BaseComponent implements OnInit, OnDestr
             return
         }
         await this.sync.deleteSource(source.id)
+        this.sync.wsCache.delete(source.id)
+        if (this.sync.expandedWsId === source.id) {
+            this.sync.expandedWsId = null
+        }
         this.reload()
     }
 
@@ -182,9 +213,8 @@ export class SyncPanelComponent extends BaseComponent implements OnInit, OnDestr
         }
         this.fetchingBranches = true
         try {
-            // token draft so private repos list too
             const withToken = { ...src, tokenPlain: this.draftToken || src.tokenPlain }
-            this.branches = await this.sync.listBranches(withToken)
+            this.branches = await this.sync.listServerBranches(withToken)
         } catch (e: any) {
             this.branches = null
             this.notifications.error(`${this.t.t('betterConfiger.sync.branchesFailed')}: ${e?.message ?? e}`)
@@ -197,130 +227,6 @@ export class SyncPanelComponent extends BaseComponent implements OnInit, OnDestr
         this.editing!.branch = branch
     }
 
-    // -------------------------------------------------------------- proxy ----
-
-    async saveProxy (): Promise<void> {
-        try {
-            await this.sync.setProxyUrl(this.proxyDraft)
-        } catch (e: any) {
-            this.notifications.error(`${this.t.t('betterConfiger.sync.failed')}: ${e?.message ?? e}`)
-        }
-    }
-
-    /** Guards against the classic misfill: pasting the REPO url into the
-     *  proxy box (observed in the wild — it silently breaks every sync). */
-    get proxyLooksWrong (): boolean {
-        const v = this.proxyDraft.trim()
-        if (!v) {
-            return false
-        }
-        if (!/^https?:\/\//i.test(v)) {
-            return true
-        }
-        return /\.git(\?|$)/i.test(v) || /github\.com|gitlab|gitee/i.test(v)
-    }
-
-    // --------------------------------------------------------- operations ----
-
-    async pull (source: SyncSource): Promise<void> {
-        if (this.anyBusy(source.id)) {
-            return
-        }
-        this.busy.set(source.id, 'pull')
-        try {
-            const preview: PullPreview = await this.sync.previewPull(source)
-            if (!preview.report.ok) {
-                this.notifications.error(`${this.t.t('betterConfiger.import.notAPackage')} (${source.path})`)
-                return
-            }
-            const t = this.t
-            const detail = [
-                `${source.url} @ ${source.branch}`,
-                `${preview.remote.oid.slice(0, 8)} ${preview.remote.message}`,
-                `${t.t('betterConfiger.title')}: ${Object.keys(preview.pkg.modules ?? {}).join(', ') || '(empty)'}`,
-                '',
-                ...preview.report.issues.map(i => `[${i.level}] ${i.message}`),
-            ].join('\n')
-            const r = await this.confirm({
-                title: t.t('betterConfiger.sync.pullConfirmTitle'),
-                detail,
-                buttons: [
-                    { label: t.t('betterConfiger.import.mergeButton'), className: 'btn btn-primary btn-sm', value: 0 },
-                    { label: t.t('betterConfiger.import.replaceButton'), className: 'btn btn-secondary btn-sm', value: 1 },
-                    { label: t.t('betterConfiger.editor.cancel'), className: 'btn btn-secondary btn-sm', value: 2 },
-                ],
-            })
-            if (r === null || r === 2) {
-                return
-            }
-            const mode = r === 0 ? 'merge' : 'replace'
-            const result = await this.sync.applyPull(source, preview, mode)
-            const stats = result.profilesStats
-                ? ` (profiles: +${result.profilesStats.added}, ~${result.profilesStats.overwritten})`
-                : ''
-            this.notifications.info(`${t.t('betterConfiger.import.applied')}${stats}`)
-            this.reload()
-        } catch (e: any) {
-            this.notifications.error(`${this.t.t('betterConfiger.sync.pullFailed')}: ${e?.message ?? e}`)
-        } finally {
-            this.busy.delete(source.id)
-        }
-    }
-
-    async push (source: SyncSource): Promise<void> {
-        if (this.anyBusy(source.id)) {
-            return
-        }
-        this.busy.set(source.id, 'push')
-        try {
-            const payload = this.sync.buildPushPayload(source)
-            const t = this.t
-            const detail = [
-                `${source.url} @ ${source.branch} : ${source.path}`,
-                `${t.t('betterConfiger.sync.pushSections')}: ${payload.sections.join(', ') || '(none)'}`,
-                payload.excluded.length
-                    ? `${t.t('betterConfiger.sync.pushExcluded')}: ${payload.excluded.join(', ')}`
-                    : '',
-            ].filter(Boolean).join('\n')
-            const r = await this.confirm({
-                title: t.t('betterConfiger.sync.pushConfirmTitle'),
-                detail,
-                buttons: [
-                    { label: t.t('betterConfiger.sync.push'), className: 'btn btn-primary btn-sm', value: 0 },
-                    { label: t.t('betterConfiger.editor.cancel'), className: 'btn btn-secondary btn-sm', value: 1 },
-                ],
-            })
-            if (r !== 0) {
-                return
-            }
-            try {
-                const result = await this.sync.pushIfFastForward(source)
-                this.notifications.info(`${t.t('betterConfiger.sync.pushDone')} (${result.sections})`)
-            } catch (e) {
-                if (!(e instanceof PushRejectedError)) {
-                    throw e
-                }
-                const f = await this.confirm({
-                    title: t.t('betterConfiger.sync.rejectedTitle'),
-                    detail: t.t('betterConfiger.sync.rejectedDetail'),
-                    buttons: [
-                        { label: t.t('betterConfiger.sync.forceButton'), className: 'btn btn-danger btn-sm', value: 0 },
-                        { label: this.t.t('betterConfiger.editor.cancel'), className: 'btn btn-secondary btn-sm', value: 1 },
-                    ],
-                })
-                if (f === 0) {
-                    const result = await this.sync.pushForce(source)
-                    this.notifications.info(`${t.t('betterConfiger.sync.pushDone')} (${result.sections})`)
-                }
-            }
-            this.reload()
-        } catch (e: any) {
-            this.notifications.error(`${this.t.t('betterConfiger.sync.pushFailed')}: ${e?.message ?? e}`)
-        } finally {
-            this.busy.delete(source.id)
-        }
-    }
-
     tokenBadge (source: SyncSource): string {
         if (source.tokenInVault) {
             return this.t.t('betterConfiger.sync.tokenVaultBadge')
@@ -329,6 +235,10 @@ export class SyncPanelComponent extends BaseComponent implements OnInit, OnDestr
             return this.t.t('betterConfiger.sync.tokenPlainBadge')
         }
         return ''
+    }
+
+    get logErrorCount (): number {
+        return this.log.entries.reduce((n, e) => n + (e.level === 'error' ? 1 : 0), 0)
     }
 
     // ---------------------------------------------------------------- log ----
@@ -343,8 +253,6 @@ export class SyncPanelComponent extends BaseComponent implements OnInit, OnDestr
         }
     }
 
-    /** Follow the log only when the user is already at the bottom (so
-     *  reading history is not interrupted by new lines). */
     private scrollToLogBottom (force = false): void {
         const el = this.logScrollEl?.nativeElement as HTMLElement | undefined
         if (!el) {

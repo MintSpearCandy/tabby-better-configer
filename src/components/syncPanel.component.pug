@@ -1,10 +1,14 @@
 .bc-sync
+    // one compact strip: repo tabs · + · proxy
     .bc-sync-head
-        .bc-sync-title
-            h4 {{ t.t("betterConfiger.sync.title") }}
-            .bc-sync-subtitle {{ t.t("betterConfiger.sync.subtitle") }}
-        .bc-sync-head-actions
-            .bc-proxy-box(*ngIf='!editing', [title]="t.t('betterConfiger.sync.proxyHint')")
+        .bc-source-tabs(*ngIf='sources.length && !editing')
+            .bc-source-tab(*ngFor='let s of sources', [class.active]='selectedSource?.id === s.id', (click)='selectSource(s)')
+                span.bc-source-tab-name {{ s.name }}
+                button.bc-source-tab-edit([title]="t.t('betterConfiger.sync.edit')", (click)='startEdit(s); $event.stopPropagation()') ✎
+                button.bc-source-tab-del([title]="t.t('betterConfiger.sync.delete')", (click)='deleteSource(s); $event.stopPropagation()') ×
+        .bc-sync-head-actions(*ngIf='!editing')
+            button.bc-sync-add(*ngIf='sources.length', [title]="t.t('betterConfiger.sync.add')", (click)='startEdit()') +
+            .bc-proxy-box([title]="t.t('betterConfiger.sync.proxyHint')")
                 input.form-control.form-control-sm.bc-proxy(
                     type='text',
                     [ngModel]='proxyDraft',
@@ -12,46 +16,12 @@
                     (change)='saveProxy()',
                     [placeholder]="t.t('betterConfiger.sync.proxyPlaceholder')")
                 .bc-proxy-warn(*ngIf='proxyLooksWrong') {{ t.t("betterConfiger.sync.proxyWarn") }}
-            button.btn.btn-primary.btn-sm(
-                *ngIf='!editing',
-                (click)='startEdit()') {{ t.t("betterConfiger.sync.add") }}
-    .bc-sync-empty(*ngIf='!sources.length && !editing') {{ t.t("betterConfiger.sync.noSources") }}
 
-    .bc-sync-source(*ngFor='let s of sources')
-        .bc-sync-source-main
-            .bc-sync-source-name-line
-                span.bc-sync-source-name {{ s.name }}
-                span.bc-sync-badge.mode({{ s.mode }})
-                span.bc-sync-badge.token(*ngIf='tokenBadge(s)') {{ tokenBadge(s) }}
-                span.bc-sync-badge.sensitive(*ngIf='s.includeSensitive') {{ t.t("betterConfiger.nav.sensitive") }}
-            .bc-sync-source-url {{ s.url }} @ {{ s.branch }} : {{ s.path }}
-            .bc-sync-source-last
-                span(*ngIf='s.lastPull')
-                    | {{ t.t("betterConfiger.sync.lastPull") }}: {{ s.lastPull.at.slice(0, 19).replace("T", " ") }}
-                    |  ({{ s.lastPull.oid.slice(0, 8) }} {{ s.lastPull.message }})
-                span(*ngIf='!s.lastPull') {{ t.t("betterConfiger.sync.lastPull") }}: {{ t.t("betterConfiger.sync.never") }}
-                span.sep ·
-                span(*ngIf='s.lastPush')
-                    | {{ t.t("betterConfiger.sync.lastPush") }}: {{ s.lastPush.at.slice(0, 19).replace("T", " ") }}
-                span(*ngIf='!s.lastPush') {{ t.t("betterConfiger.sync.lastPush") }}: {{ t.t("betterConfiger.sync.never") }}
-        .bc-sync-source-actions
-            button.btn.btn-secondary.btn-sm(
-                [disabled]='anyBusy(s.id)',
-                (click)='pull(s)')
-                i.fas.fa-fw.fa-download
-                | {{ t.t("betterConfiger.sync.pull") }}
-            button.btn.btn-secondary.btn-sm(
-                [disabled]='anyBusy(s.id)',
-                (click)='push(s)')
-                i.fas.fa-fw.fa-upload
-                | {{ t.t("betterConfiger.sync.push") }}
-            button.btn.btn-secondary.btn-sm(
-                [disabled]='anyBusy(s.id)',
-                (click)='startEdit(s)') {{ t.t("betterConfiger.sync.edit") }}
-            button.btn.btn-secondary.btn-sm.btn-danger-outlined(
-                [disabled]='anyBusy(s.id)',
-                (click)='deleteSource(s)') {{ t.t("betterConfiger.sync.delete") }}
+    .bc-sync-empty(*ngIf='!sources.length && !editing')
+        span {{ t.t("betterConfiger.sync.noSources") }}
+        button.btn.btn-primary.btn-sm((click)='startEdit()') {{ t.t("betterConfiger.sync.add") }}
 
+    // -------------------------------------------------- source editor ----
     .bc-sync-editor(*ngIf='editing')
         h5 {{ editingNew ? t.t("betterConfiger.sync.add") : t.t("betterConfiger.sync.edit") }}
         .form-row
@@ -99,18 +69,28 @@
             button.btn.btn-primary.btn-sm((click)='saveEdit()') {{ t.t("betterConfiger.sync.save") }}
             button.btn.btn-secondary.btn-sm((click)='cancelEdit()') {{ t.t("betterConfiger.editor.cancel") }}
 
-    .bc-sync-log
-        .bc-sync-log-head
+    // --------------------------------------------- git browser (3-pane) ----
+    bc-git-browser(*ngIf='selectedSource && !editing', [source]='selectedSource')
+
+    // ------------------------------------------------------- log window ----
+    // collapsed by default: the commit list gets the space; the title shows
+    // the latest line + error count so problems are still visible at a glance
+    .bc-sync-log([class.collapsed]='logCollapsed')
+        .bc-sync-log-head((click)='logCollapsed = !logCollapsed')
+            i.fas.fa-fw.bc-log-caret([class]='logCollapsed ? "fa-chevron-right" : "fa-chevron-down"')
             span.bc-sync-log-title
                 i.fas.fa-fw.fa-list-ul
                 | {{ t.t("betterConfiger.sync.log.title") }}
-            .bc-sync-log-actions
+            span.bc-log-latest(*ngIf='logCollapsed && log.entries.length', [class.error]='logErrorCount > 0')
+                | {{ log.entries[log.entries.length - 1].message }}
+            span.bc-log-errcount(*ngIf='logErrorCount') {{ logErrorCount }} ✗
+            .bc-sync-log-actions((click)='$event.stopPropagation()')
                 label.bc-check.bc-debug-toggle([title]="t.t('betterConfiger.sync.log.debugHint')")
                     input(type='checkbox', [ngModel]='showDebugLog', (ngModelChange)='toggleDebugLog($event)')
                     span {{ t.t("betterConfiger.sync.log.debug") }}
                 button.btn.btn-secondary.btn-sm((click)='copyLog()') {{ t.t("betterConfiger.sync.log.copy") }}
                 button.btn.btn-secondary.btn-sm((click)='log.clear()') {{ t.t("betterConfiger.sync.log.clear") }}
-        .bc-sync-log-body([class.hide-debug]='!showDebugLog', #logScroll)
+        .bc-sync-log-body(*ngIf='!logCollapsed', [class.hide-debug]='!showDebugLog', #logScroll)
             .bc-sync-log-line(
                 *ngFor='let e of log.entries',
                 [class.debug]='e.level === "debug"',
@@ -123,6 +103,7 @@
                     span.bc-log-detail(*ngIf='e.detail') {{ e.detail }}
             .bc-sync-log-empty(*ngIf='!log.entries.length') {{ t.t("betterConfiger.sync.log.empty") }}
 
+    // -------------------------------------------------- generic confirm ----
     .bc-modal-backdrop(*ngIf='confirmReq', (click)='pickConfirm(null)')
         .bc-modal((click)='$event.stopPropagation()')
             .bc-modal-title {{ confirmReq.title }}

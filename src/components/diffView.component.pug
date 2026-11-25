@@ -1,0 +1,8 @@
+.bc-diff-view([class.compact]='compact')
+    .bc-diff-line(
+        *ngFor='let l of visibleLines',
+        [class.add]='l.kind === "add"',
+        [class.del]='l.kind === "del"')
+        span.bc-diff-sign {{ l.kind === 'add' ? '+' : l.kind === 'del' ? '−' : ' ' }}
+        span.bc-diff-text {{ l.text }}
+    .bc-diff-empty(*ngIf='!lines.length') (no changes)

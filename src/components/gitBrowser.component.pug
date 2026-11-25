@@ -1,0 +1,322 @@
+.bc-browser(*ngIf='ws')
+    // ---------------------------------------------------- header ----
+    .bc-header
+        .bc-branch-picker
+            button.bc-branch-current(
+                [class.open]='branchMenuOpen',
+                (click)='toggleBranchMenu($event)',
+                [title]="t.t('betterConfiger.sync.gg.switchBranch')")
+                i.fas.fa-fw.fa-code-branch
+                span.bc-branch-current-name {{ ws.localBranch }}
+                span.bc-branch-ab(*ngIf='ws.ahead || ws.behind')
+                    span.ahead(*ngIf='ws.ahead') ↑{{ ws.ahead }}
+                    span.behind(*ngIf='ws.behind') ↓{{ ws.behind }}
+                i.fas.fa-fw.fa-chevron-down.bc-branch-caret
+            .bc-branch-menu(*ngIf='branchMenuOpen', (click)='$event.stopPropagation()')
+                .bc-branch-menu-section
+                    .bc-branch-menu-title
+                        | {{ t.t("betterConfiger.sync.ws.localBranches") }}
+                        button.bc-link-btn((click)='opBranches()') + {{ t.t("betterConfiger.sync.ws.newBranch") }}
+                    .bc-branch-item(
+                        *ngFor='let b of ws.localBranches',
+                        [class.current]='b === ws.localBranch',
+                        [class.filtered]='branchFilter === b',
+                        (click)='pickBranch(b)')
+                        span.bc-branch-dot([style.background]='colorOf(b)')
+                        span.bc-branch-item-name {{ b }}
+                        span.bc-branch-item-ab(*ngIf='aheadBehindOf(b); let ab')
+                            span(*ngIf='ab.ahead') ↑{{ ab.ahead }}
+                            span(*ngIf='ab.behind') ↓{{ ab.behind }}
+                        span.bc-branch-item-tag(*ngIf='b === ws.localBranch') {{ t.t("betterConfiger.sync.gg.current") }}
+                        span.bc-branch-item-tag.filter(*ngIf='branchFilter === b') {{ t.t("betterConfiger.sync.gg.filter") }}
+                .bc-branch-menu-section
+                    .bc-branch-menu-title {{ t.t("betterConfiger.sync.ws.remoteBranches") }}
+                    .bc-branch-item(
+                        *ngFor='let b of ws.remoteBranches',
+                        [class.filtered]='branchFilter === "origin/" + b',
+                        (click)='pickBranch("origin/" + b)')
+                        i.fas.fa-fw.fa-cloud.bc-branch-item-icon
+                        span.bc-branch-item-name origin/{{ b }}
+                        span.bc-branch-item-tag.filter(*ngIf='branchFilter === "origin/" + b') {{ t.t("betterConfiger.sync.gg.filter") }}
+                .bc-branch-menu-hint {{ t.t("betterConfiger.sync.gg.branchHint") }}
+
+        .bc-sync-state([title]="t.t('betterConfiger.sync.gg.syncState')")
+            span.bc-state-dot([class.clean]='!ws.ahead && !ws.behind', [class.dirty]='ws.ahead || ws.behind')
+            span.bc-state-text {{ syncStateText() }}
+
+        .bc-header-actions
+            button.bc-tool-btn(data-op='fetch', [disabled]='busy', [title]="t.t('betterConfiger.sync.ws.fetchHint')", (click)='opFetch()')
+                i.fas.fa-fw([class]='busyOp === "fetch" ? "fa-spin fa-sync" : "fa-sync"')
+                span {{ t.t("betterConfiger.sync.ws.fetch") }}
+            button.bc-tool-btn(data-op='commit', [disabled]='busy || !ws.configDiff.length', [class.attention]='ws.configDiff.length > 0',
+                [title]="t.t('betterConfiger.sync.ws.commitHint')", (click)='opCommit()')
+                i.fas.fa-fw.fa-check
+                span {{ t.t("betterConfiger.sync.ws.commit") }}
+                em.bc-tool-count(*ngIf='ws.configDiff.length') {{ ws.configDiff.length }}
+            button.bc-tool-btn(data-op='push', [disabled]='busy || !ws.ahead', [class.attention]='ws.ahead > 0',
+                [title]="t.t('betterConfiger.sync.ws.pushHint')", (click)='opPush()')
+                i.fas.fa-fw.fa-upload
+                span {{ t.t("betterConfiger.sync.ws.push") }}
+                em.bc-tool-count(*ngIf='ws.ahead') {{ ws.ahead }}
+            button.bc-tool-btn(data-op='apply', [disabled]='busy', [title]="t.t('betterConfiger.sync.ws.applyHint')", (click)='opApply()')
+                i.fas.fa-fw.fa-download
+                span {{ t.t("betterConfiger.sync.ws.apply") }}
+            button.bc-tool-btn(data-op='merge', [disabled]='busy', [title]="t.t('betterConfiger.sync.ws.mergeHint')", (click)='opMerge()')
+                i.fas.fa-fw.fa-code-merge
+                span {{ t.t("betterConfiger.sync.ws.merge") }}
+            button.bc-tool-btn(data-op='update', [disabled]='busy', [title]="t.t('betterConfiger.sync.ws.updateHint')", (click)='opUpdate()')
+                i.fas.fa-fw.fa-cloud-download-alt
+                span {{ t.t("betterConfiger.sync.ws.update") }}
+
+    // -------------------------------------------------- filter bar ----
+    .bc-filter-bar
+        input.bc-filter-input.form-control.form-control-sm(
+            type='text',
+            [ngModel]='commitFilter',
+            (ngModelChange)='commitFilter = $event',
+            [placeholder]="t.t('betterConfiger.sync.gg.filterCommits')")
+        span.bc-filter-active(*ngIf='branchFilter')
+            i.fas.fa-fw.fa-filter
+            | {{ branchFilter }}
+            button.bc-link-btn((click)='clearBranchFilter()') ×
+        span.bc-repo-short([title]='source.url') {{ remoteUrlShort }} · {{ source.path }}
+
+    // -------------------------------------------- graph + commit list ----
+    .bc-history((click)='branchMenuOpen = false')
+        .bc-history-scroll(#historyScroll)
+            .bc-history-inner([style.height.px]='historyHeight')
+                .bc-row(
+                    *ngFor='let c of visibleCommits; let i = index; trackBy: trackByOid',
+                    [class.selected]='selectedOid === c.oid',
+                    [class.head]='c.oid === headOid',
+                    (click)='selectCommit(c.oid)',
+                    (contextmenu)='openContextMenu($event, c)')
+                    .bc-row-lanes([style.width.px]='laneWidth')
+                        svg.bc-row-svg([attr.width]='laneWidth', [attr.height]='ROW_HEIGHT', [attr.viewBox]='"0 0 " + laneWidth + " " + ROW_HEIGHT')
+                            // lanes passing THROUGH this row (row-local pieces, so
+                            // filtering/re-flowing rows never misaligns the graph)
+                            path.bc-seg(*ngFor='let s of segmentsOf(i)', [attr.d]='s.d', [attr.stroke]='s.color')
+                            circle.bc-dot(
+                                *ngIf='dotAt(i)',
+                                [attr.cx]='dotAt(i)!.x',
+                                [attr.cy]='ROW_HEIGHT / 2',
+                                [attr.r]='dotAt(i)!.isHead ? 6 : 5',
+                                [attr.fill]='dotAt(i)!.color',
+                                [class.merge]='dotAt(i)!.isMerge',
+                                [class.head]='dotAt(i)!.isHead')
+                    .bc-row-refs
+                        span.bc-ref-badge(
+                            *ngFor='let r of c.refs',
+                            [class.remote]='r.startsWith("origin/")',
+                            [class.head-tag]='r === ws.localBranch',
+                            [style.borderColor]='colorOf(r)',
+                            [title]='r') {{ r }}
+                    .bc-row-msg([title]='c.message')
+                        | {{ c.message || t.t('betterConfiger.sync.gg.noMessage') }}
+                    .bc-row-spacer
+                    .bc-row-unpushed(*ngIf='!isPushed(c)', [title]="t.t('betterConfiger.sync.gg.unpushed')")
+                    .bc-row-author
+                        | {{ c.author }}
+                    .bc-row-hash
+                        | {{ c.oid.slice(0, 7) }}
+                    .bc-row-date {{ c.at | date:'MM-dd HH:mm' }}
+        .bc-history-empty(*ngIf='!visibleCommits.length')
+            | {{ graphCommits.length ? t.t("betterConfiger.sync.gg.noMatch") : t.t("betterConfiger.sync.ws.noHistory") }}
+
+    // ---------------------------------------------------- detail ----
+    .bc-detail([class.open]='selectedOid', [class.collapsed]='detailCollapsed')
+        .bc-detail-bar((click)='detailCollapsed = !detailCollapsed')
+            i.fas.fa-fw.bc-detail-caret([class]='detailCollapsed ? "fa-chevron-right" : "fa-chevron-down"')
+            span.bc-detail-bar-hash(*ngIf='detailCommit()') {{ detailCommit()!.oid.slice(0, 7) }}
+            span.bc-detail-bar-msg(*ngIf='detailCommit()') {{ detailCommit()!.message }}
+            span.bc-detail-bar-hint(*ngIf='!detailCommit()')
+                | {{ t.t("betterConfiger.sync.ws.selectCommit") }}
+            .bc-detail-bar-actions(*ngIf='detailCommit()')
+                button.bc-link-btn((click)='opReset(detailCommit()!.oid); $event.stopPropagation()')
+                    i.fas.fa-fw.fa-undo
+                    | {{ t.t("betterConfiger.sync.ws.reset") }}
+                button.bc-link-btn((click)='selectedOid = null; $event.stopPropagation()') ×
+        .bc-detail-body(*ngIf='selectedOid && !detailCollapsed')
+            .bc-detail-meta
+                span {{ t.t("betterConfiger.sync.gg.author") }}: {{ detailCommit()!.author }}
+                span ·
+                span {{ detailCommit()!.at.slice(0, 19).replace("T", " ") }}
+                span ·
+                span {{ detailCommit()!.oid }}
+                span.bc-detail-parents(*ngIf='detailCommit()!.parents.length > 1')
+                    | · {{ t.t("betterConfiger.sync.gg.mergeOf") }} {{ detailCommit()!.parents.slice(1).map(shortOid).join(", ") }}
+            .bc-detail-summary(*ngIf='selectedDiff')
+                span.bc-sum-add +
+                    | {{ selectedDiff!.summary.added }}
+                span.bc-sum-del −
+                    | {{ selectedDiff!.summary.removed }}
+                span.bc-sum-mod ~
+                    | {{ selectedDiff!.summary.changed }}
+                span.bc-sum-label {{ t.t("betterConfiger.sync.gg.sectionsChanged") }}
+            .bc-detail-loading(*ngIf='selectedLoading') {{ t.t("betterConfiger.sync.gg.loadingDiff") }}
+            .bc-detail-section(*ngFor='let s of selectedDiff?.sections ?? []')
+                .bc-detail-section-head((click)='toggleSection(s.section)')
+                    i.fas.fa-fw.bc-sec-caret([class]='collapsedSections.has(s.section) ? "fa-chevron-right" : "fa-chevron-down"')
+                    span.bc-section-badge([class]='s.kind') {{ s.kind }}
+                    span.bc-section-name {{ s.section }}
+                bc-diff-view(*ngIf='!collapsedSections.has(s.section)', [lines]='s.lines', [compact]='true')
+            .bc-detail-nodiff(*ngIf='selectedDiff && !selectedDiff.sections.length && !selectedLoading') {{ t.t("betterConfiger.sync.gg.noDiff") }}
+
+    // ------------------------------------------------ context menu ----
+    .bc-ctx-backdrop(*ngIf='ctxMenu', (click)='ctxMenu = null')
+    .bc-ctx(*ngIf='ctxMenu', [style.left.px]='ctxMenu.x', [style.top.px]='ctxMenu.y')
+        .bc-ctx-item((click)='ctxSelect()')
+            i.fas.fa-fw.fa-eye
+            | {{ t.t("betterConfiger.sync.gg.viewCommit") }}
+        .bc-ctx-item((click)='ctxReset()')
+            i.fas.fa-fw.fa-undo
+            | {{ t.t("betterConfiger.sync.ws.reset") }}
+        .bc-ctx-sep
+        .bc-ctx-item((click)='ctxClose()')
+            i.fas.fa-fw.fa-times
+            | {{ t.t("betterConfiger.editor.cancel") }}
+
+    // ---------------------------------------------------- modals ----
+    .bc-modal-backdrop(*ngIf='modal', (click)='closeModal()')
+        .bc-modal([class]="'bc-modal bc-modal-' + modal.kind", (click)='$event.stopPropagation()')
+
+            ng-container(*ngIf='modal.kind === "commit"')
+                .bc-modal-title {{ t.t("betterConfiger.sync.ws.commitTitle") }}
+                .bc-modal-detail
+                    .bc-modal-field
+                        label {{ t.t("betterConfiger.sync.ws.commitMessage") }}
+                        input.form-control.form-control-sm(type='text', [(ngModel)]='modal.message', [placeholder]="t.t('betterConfiger.sync.gg.commitPlaceholder')")
+                    .bc-diff-sections
+                        span.bc-sum-add +
+                            | {{ modal.diff?.summary.added }}
+                        span.bc-sum-del −
+                            | {{ modal.diff?.summary.removed }}
+                        span.bc-sum-mod ~
+                            | {{ modal.diff?.summary.changed }}
+                        span.bc-sum-label {{ t.t("betterConfiger.sync.ws.commitDiff") }}
+                    .bc-detail-section(*ngFor='let s of modal.diff?.sections ?? []')
+                        .bc-detail-section-head
+                            span.bc-section-badge([class]='s.kind') {{ s.kind }}
+                            span.bc-section-name {{ s.section }}
+                        bc-diff-view([lines]='s.lines', [compact]='true')
+                    .bc-detail-nodiff(*ngIf='modal.diff && !modal.diff.sections.length') {{ t.t("betterConfiger.sync.ws.nothingToCommit") }}
+                .bc-modal-actions
+                    button.btn.btn-secondary.btn-sm((click)='closeModal()') {{ t.t("betterConfiger.editor.cancel") }}
+                    button.btn.btn-primary.btn-sm([disabled]='!modal.diff?.sections.length', (click)='submitCommit()') {{ t.t("betterConfiger.sync.ws.commit") }}
+
+            ng-container(*ngIf='modal.kind === "merge"')
+                .bc-modal-title {{ t.t("betterConfiger.sync.ws.mergeTitle") }}
+                .bc-modal-detail
+                    .bc-modal-field
+                        label {{ t.t("betterConfiger.sync.ws.mergeFrom") }}
+                        select.form-control.form-control-sm([(ngModel)]='modal.fromRef')
+                            option(*ngFor='let b of mergeSources', [value]='b.ref') {{ b.label }}
+                    .bc-modal-hint {{ t.t("betterConfiger.sync.ws.mergeHint") }}
+                .bc-modal-actions
+                    button.btn.btn-secondary.btn-sm((click)='closeModal()') {{ t.t("betterConfiger.editor.cancel") }}
+                    button.btn.btn-primary.btn-sm([disabled]='!modal.fromRef', (click)='submitMerge()') {{ t.t("betterConfiger.sync.ws.merge") }}
+
+            ng-container(*ngIf='modal.kind === "conflicts"')
+                .bc-modal-title
+                    | {{ t.t("betterConfiger.sync.ws.conflictsTitle") }}
+                    span.bc-modal-count
+                        | {{ modal.draft!.conflicts.length }}
+                .bc-modal-detail
+                    .bc-modal-hint {{ t.t("betterConfiger.sync.ws.conflictHint") }}
+                    .bc-conflict-list
+                        .bc-conflict-row(*ngFor='let c of modal.draft!.conflicts')
+                            .bc-conflict-section
+                                span.bc-section-badge.changed !
+                                span {{ c.section }}
+                                span.bc-conflict-side-label {{ sideLabel(c.section) }}
+                            .bc-conflict-choices
+                                button.btn.btn-sm.bc-choice([class.btn-primary]='sideOf(c.section) === "ours"',
+                                    [class.btn-secondary]='sideOf(c.section) !== "ours"',
+                                    (click)='pickSide(c.section, "ours")') {{ t.t("betterConfiger.sync.ws.useOurs") }}
+                                button.btn.btn-sm.bc-choice([class.btn-primary]='sideOf(c.section) === "theirs"',
+                                    [class.btn-secondary]='sideOf(c.section) !== "theirs"',
+                                    (click)='pickSide(c.section, "theirs")') {{ t.t("betterConfiger.sync.ws.useTheirs") }}
+                            bc-diff-view([lines]='diffSvc.sideDiff(c.ours, c.theirs)', [compact]='true')
+                    .bc-modal-hint.all-resolved(*ngIf='resolvedCount() === modal.draft!.conflicts.length')
+                        i.fas.fa-fw.fa-check
+                        | {{ t.t("betterConfiger.sync.gg.allResolved") }}
+                .bc-modal-actions
+                    button.btn.btn-secondary.btn-sm((click)='closeModal()') {{ t.t("betterConfiger.editor.cancel") }}
+                    button.btn.btn-primary.btn-sm((click)='submitConflicts()') {{ t.t("betterConfiger.sync.ws.merge") }}
+
+            ng-container(*ngIf='modal.kind === "apply"')
+                .bc-modal-title {{ t.t("betterConfiger.sync.ws.applyTitle") }}
+                .bc-modal-detail
+                    .bc-modal-field
+                        label {{ t.t("betterConfiger.sync.mode") }}
+                        select.form-control.form-control-sm([(ngModel)]='modal.mode')
+                            option(value='merge') {{ t.t("betterConfiger.sync.modeMerge") }}
+                            option(value='replace') {{ t.t("betterConfiger.sync.modeReplace") }}
+                    .bc-diff-sections
+                        span.bc-sum-add +
+                            | {{ modal.diff?.summary.added }}
+                        span.bc-sum-del −
+                            | {{ modal.diff?.summary.removed }}
+                        span.bc-sum-mod ~
+                            | {{ modal.diff?.summary.changed }}
+                        span.bc-sum-label {{ t.t("betterConfiger.sync.ws.applyDiff") }}
+                    .bc-detail-section(*ngFor='let s of modal.diff?.sections ?? []')
+                        .bc-detail-section-head
+                            span.bc-section-badge([class]='s.kind') {{ s.kind }}
+                            span.bc-section-name {{ s.section }}
+                        bc-diff-view([lines]='s.lines', [compact]='true')
+                    .bc-detail-nodiff(*ngIf='modal.diff && !modal.diff.sections.length') {{ t.t("betterConfiger.sync.ws.noDiff") }}
+                .bc-modal-actions
+                    button.btn.btn-secondary.btn-sm((click)='closeModal()') {{ t.t("betterConfiger.editor.cancel") }}
+                    button.btn.btn-primary.btn-sm([disabled]='!modal.diff?.sections.length', (click)='submitApply()') {{ t.t("betterConfiger.sync.ws.apply") }}
+
+            ng-container(*ngIf='modal.kind === "push"')
+                .bc-modal-title {{ t.t("betterConfiger.sync.ws.pushTitle") }}
+                .bc-modal-detail
+                    .bc-modal-hint
+                        | {{ ws.localBranch }} → origin/{{ source.branch }} · {{ t.t("betterConfiger.sync.ws.outgoing") }} ({{ modal.outgoing!.length }})
+                    .bc-push-list
+                        .bc-push-entry(*ngFor='let h of modal.outgoing')
+                            span.bc-hist-oid {{ h.oid.slice(0, 7) }}
+                            span.bc-hist-msg {{ h.message }}
+                    label.bc-check
+                        input(type='checkbox', [(ngModel)]='modal.force')
+                        span {{ t.t("betterConfiger.sync.forceButton") }}
+                .bc-modal-actions
+                    button.btn.btn-secondary.btn-sm((click)='closeModal()') {{ t.t("betterConfiger.editor.cancel") }}
+                    button.btn.btn-primary.btn-sm((click)='submitPush()') {{ t.t("betterConfiger.sync.ws.push") }}
+
+            ng-container(*ngIf='modal.kind === "branch"')
+                .bc-modal-title {{ t.t("betterConfiger.sync.ws.branchTitle") }}
+                .bc-modal-detail
+                    .bc-modal-field
+                        label {{ t.t("betterConfiger.sync.ws.newBranch") }}
+                        input.form-control.form-control-sm(type='text', [(ngModel)]='modal.newName', placeholder='feature/x', (keyup.enter)='submitCreateBranch()')
+                    .bc-modal-field
+                        label {{ t.t("betterConfiger.sync.ws.createFrom") }}
+                        select.form-control.form-control-sm([(ngModel)]='modal.newFrom')
+                            option(*ngFor='let b of mergeSources', [value]='b.ref') {{ b.label }}
+                    .bc-branch-rows
+                        .bc-branch-row(*ngFor='let b of ws?.localBranches ?? []')
+                            span.bc-branch-dot([style.background]='colorOf(b)')
+                            span.bc-branch-name {{ b }}
+                            span.bc-branch-current(*ngIf='b === ws?.localBranch') {{ t.t("betterConfiger.sync.ws.current") }}
+                            span.bc-branch-actions(*ngIf='b !== ws?.localBranch')
+                                button.btn.btn-secondary.btn-sm((click)='switchTo(b); closeModal()') {{ t.t("betterConfiger.sync.ws.switch") }}
+                                button.btn.btn-secondary.btn-sm((click)='opMerge(b)') {{ t.t("betterConfiger.sync.ws.merge") }}
+                                button.btn.btn-secondary.btn-sm.btn-danger-outlined((click)='deleteBranch(b)') {{ t.t("betterConfiger.sync.ws.delete") }}
+                .bc-modal-actions
+                    button.btn.btn-secondary.btn-sm((click)='closeModal()') {{ t.t("betterConfiger.editor.cancel") }}
+                    button.btn.btn-primary.btn-sm([disabled]='!modal.newName?.trim()', (click)='submitCreateBranch()') {{ t.t("betterConfiger.sync.ws.create") }}
+
+            ng-container(*ngIf='modal.kind === "reset"')
+                .bc-modal-title {{ t.t("betterConfiger.sync.ws.resetTitle") }}
+                .bc-modal-detail
+                    .bc-modal-hint {{ t.t("betterConfiger.sync.ws.resetDetail") }}
+                    .bc-push-list
+                        .bc-push-entry
+                            span.bc-hist-oid {{ modal.resetOid!.slice(0, 7) }}
+                            span.bc-hist-msg {{ detailCommit()?.message }}
+                .bc-modal-actions
+                    button.btn.btn-secondary.btn-sm((click)='closeModal()') {{ t.t("betterConfiger.editor.cancel") }}
+                    button.btn.btn-danger.btn-sm((click)='submitReset()') {{ t.t("betterConfiger.sync.ws.reset") }}

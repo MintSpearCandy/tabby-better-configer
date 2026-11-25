@@ -1,26 +1,72 @@
 :host {
-    display: block;
-    /* direct child of the tab shell (flex column) — own the scroll */
+    /* Flex COLUMN container, not a scrolling block: the available height
+     * must flow down to the commit list (which owns its own scroll). As a
+     * block with overflow:auto the panel only grew to its content height and
+     * left the bottom third of the pane empty. */
+    display: flex;
+    flex-direction: column;
     flex: 1;
     min-height: 0;
-    overflow-y: auto;
+    overflow: hidden;
     padding: 4px 2px;
 }
 
 .bc-sync {
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    flex: 1;
+    min-height: 0;
+    gap: 8px;
 }
 
 .bc-sync-head {
     display: flex;
-    align-items: flex-start;
-    gap: 12px;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    flex-shrink: 0;
+    padding-bottom: 6px;
+    border-bottom: 1px solid rgba(128, 128, 128, 0.2);
 
-    h4 {
-        margin: 0 0 2px;
+    .bc-sync-head-actions {
+        margin-left: auto;
+        display: flex;
+        align-items: center;
+        gap: 8px;
     }
+
+    .bc-sync-add {
+        width: 24px;
+        height: 24px;
+        border: 1px dashed rgba(128, 128, 128, 0.5);
+        border-radius: 12px;
+        background: transparent;
+        color: inherit;
+        font-size: 15px;
+        line-height: 1;
+        cursor: pointer;
+
+        &:hover {
+            border-color: rgb(96, 165, 250);
+            color: rgb(147, 197, 253);
+        }
+    }
+
+    .bc-proxy-box {
+        .bc-proxy {
+            width: 200px;
+            font-size: 11px;
+            font-family: var(--monospace-font, monospace);
+            padding: 2px 8px;
+        }
+
+        .bc-proxy-warn {
+            width: 200px;
+            font-size: 10.5px;
+            color: rgb(217, 119, 6);
+        }
+    }
+}
 
     .bc-sync-subtitle {
         font-size: 12px;
@@ -53,65 +99,185 @@
             }
         }
     }
-}
 
 .bc-sync-empty {
-    padding: 14px;
-    text-align: center;
-    border: 1px dashed rgba(128, 128, 128, 0.35);
-    border-radius: 6px;
-    opacity: 0.65;
-}
-
-.bc-sync-source {
     display: flex;
     align-items: center;
+    justify-content: center;
     gap: 12px;
-    padding: 8px 10px;
+    padding: 18px;
+    border: 1px dashed rgba(128, 128, 128, 0.35);
     border-radius: 6px;
-    background: rgba(128, 128, 128, 0.08);
+    opacity: 0.85;
+}
 
-    .bc-sync-source-main {
-        flex: 1;
-        min-width: 0;
-        display: flex;
-        flex-direction: column;
-        gap: 2px;
-    }
+// ---------------------------------------------------------- workspace ----
 
-    .bc-sync-source-name-line {
+.bc-ws {
+    border: 1px solid rgba(128, 128, 128, 0.25);
+    border-radius: 6px;
+    margin-bottom: 8px;
+    overflow: hidden;
+
+    .bc-ws-head {
         display: flex;
         align-items: center;
-        gap: 6px;
-    }
+        gap: 10px;
+        padding: 7px 10px;
+        cursor: pointer;
+        background: rgba(128, 128, 128, 0.06);
 
-    .bc-sync-source-name {
-        font-weight: 600;
-        font-size: 13px;
-    }
+        &:hover {
+            background: rgba(128, 128, 128, 0.12);
+        }
 
-    .bc-sync-source-url {
-        font-family: var(--monospace-font, monospace);
-        font-size: 11.5px;
-        opacity: 0.75;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-    }
+        .bc-ws-caret {
+            font-size: 10px;
+            opacity: 0.6;
+            width: 12px;
+        }
 
-    .bc-sync-source-last {
-        font-size: 11px;
-        opacity: 0.6;
+        .bc-ws-name-line {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            flex-shrink: 0;
+        }
 
-        .sep {
-            margin: 0 4px;
+        .bc-ws-name {
+            font-weight: 600;
+            font-size: 13px;
+        }
+
+        .bc-ws-url {
+            flex: 1;
+            min-width: 0;
+            font-family: var(--monospace-font, monospace);
+            font-size: 11px;
+            opacity: 0.7;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .bc-ws-metrics {
+            display: flex;
+            gap: 4px;
+            flex-shrink: 0;
+        }
+
+        .bc-ws-head-del {
+            flex-shrink: 0;
+            font-size: 10.5px;
+            padding: 0 6px;
+            border: none;
+            background: transparent;
+            opacity: 0.45;
+            cursor: pointer;
+
+            &:hover {
+                opacity: 1;
+                color: rgb(220, 38, 38);
+            }
+        }
+
+        .bc-ws-branch-select {
+            flex-shrink: 0;
+            max-width: 160px;
+            font-size: 12px;
+            font-family: var(--monospace-font, monospace);
+            padding: 1px 4px;
         }
     }
 
-    .bc-sync-source-actions {
+    .bc-ws-body {
+        padding: 8px 10px;
         display: flex;
+        flex-direction: column;
+        gap: 8px;
+    }
+
+    .bc-ws-toolbar {
+        display: flex;
+        flex-wrap: wrap;
         gap: 6px;
-        flex-shrink: 0;
+
+        .bc-ws-del {
+            margin-left: auto;
+        }
+    }
+
+    .bc-ws-status {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        font-size: 11.5px;
+        opacity: 0.85;
+        font-family: var(--monospace-font, monospace);
+
+        .bc-ws-diff-line {
+            opacity: 0.8;
+        }
+    }
+
+    .bc-ws-history {
+        max-height: 180px;
+        overflow-y: auto;
+        border-top: 1px dashed rgba(128, 128, 128, 0.3);
+        padding-top: 6px;
+        font-family: var(--monospace-font, monospace);
+        font-size: 11px;
+
+        .bc-ws-hist-entry {
+            display: flex;
+            gap: 8px;
+            padding: 1px 0;
+            align-items: baseline;
+
+            .bc-hist-oid {
+                opacity: 0.6;
+                flex-shrink: 0;
+            }
+
+            .bc-hist-pushed {
+                flex-shrink: 0;
+                color: rgb(74, 222, 128);
+                opacity: 0.8;
+            }
+
+            .bc-hist-msg {
+                flex: 1;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+            }
+
+            .bc-hist-at {
+                opacity: 0.5;
+                flex-shrink: 0;
+            }
+        }
+    }
+}
+
+.bc-ws-badge {
+    font-size: 10.5px;
+    font-weight: 600;
+    padding: 0 6px;
+    border-radius: 8px;
+    flex-shrink: 0;
+
+    &.ahead {
+        background: rgba(59, 130, 246, 0.3);
+    }
+
+    &.behind {
+        background: rgba(217, 119, 6, 0.3);
+    }
+
+    &.clean {
+        background: rgba(16, 185, 129, 0.25);
+        opacity: 0.7;
     }
 }
 
@@ -141,6 +307,9 @@
 }
 
 .bc-sync-editor {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
     padding: 12px;
     border-radius: 6px;
     border: 1px solid rgba(128, 128, 128, 0.3);
@@ -249,6 +418,7 @@
     border-radius: 6px;
     display: flex;
     flex-direction: column;
+    flex-shrink: 0;
 
     .bc-sync-log-head {
         display: flex;
@@ -256,6 +426,35 @@
         gap: 8px;
         padding: 4px 8px;
         border-bottom: 1px solid rgba(128, 128, 128, 0.2);
+        cursor: pointer;
+        flex-shrink: 0;
+
+        .bc-log-caret {
+            font-size: 10px;
+            opacity: 0.6;
+        }
+
+        .bc-log-latest {
+            flex: 1;
+            min-width: 0;
+            font-family: var(--monospace-font, monospace);
+            font-size: 11px;
+            opacity: 0.55;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+
+            &.error {
+                color: rgb(248, 113, 113);
+                opacity: 0.9;
+            }
+        }
+
+        .bc-log-errcount {
+            font-size: 11px;
+            font-weight: 700;
+            color: rgb(248, 113, 113);
+        }
 
         .bc-sync-log-title {
             font-size: 12px;
@@ -280,7 +479,7 @@
     }
 
     .bc-sync-log-body {
-        height: 170px;
+        height: 150px;
         overflow-y: auto;
         padding: 6px 8px;
         font-family: var(--monospace-font, monospace);
@@ -393,4 +592,172 @@
         justify-content: flex-end;
         gap: 8px;
     }
+}
+
+// ------------------------------------------------- op-modal internals ----
+
+.bc-modal {
+    .bc-modal-field {
+        display: flex;
+        flex-direction: column;
+        gap: 3px;
+        margin-bottom: 8px;
+
+        label {
+            font-size: 11px;
+            opacity: 0.7;
+            margin: 0;
+        }
+    }
+
+    .bc-modal-sections {
+        font-size: 12px;
+        margin-bottom: 6px;
+    }
+
+    .bc-conflict-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+    }
+
+    .bc-conflict-row {
+        .bc-conflict-section {
+            font-family: var(--monospace-font, monospace);
+            font-weight: 600;
+            font-size: 12.5px;
+            margin-bottom: 3px;
+        }
+
+        .bc-conflict-choices {
+            display: flex;
+            gap: 6px;
+            margin-bottom: 4px;
+        }
+
+        .bc-conflict-preview {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+
+            .bc-cp {
+                font-family: var(--monospace-font, monospace);
+                font-size: 10.5px;
+                opacity: 0.65;
+                word-break: break-all;
+            }
+        }
+    }
+
+    .bc-push-list {
+        max-height: 160px;
+        overflow-y: auto;
+        font-family: var(--monospace-font, monospace);
+        font-size: 11px;
+
+        .bc-push-entry {
+            display: flex;
+            gap: 8px;
+
+            .bc-hist-oid {
+                opacity: 0.6;
+            }
+        }
+    }
+
+    .bc-branch-rows {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        max-height: 200px;
+        overflow-y: auto;
+
+        .bc-branch-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-family: var(--monospace-font, monospace);
+            font-size: 12px;
+
+            .bc-branch-name {
+                min-width: 140px;
+            }
+
+            .bc-branch-current {
+                font-size: 10px;
+                color: rgb(96, 165, 250);
+            }
+
+            .bc-branch-actions {
+                margin-left: auto;
+                display: flex;
+                gap: 4px;
+            }
+        }
+    }
+}
+
+// ------------------------------------------------------- source tabs ----
+
+.bc-source-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+
+    .bc-source-tab {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 3px 8px;
+        border: 1px solid rgba(128, 128, 128, 0.35);
+        border-radius: 14px;
+        cursor: pointer;
+        font-size: 12px;
+
+        &:hover {
+            background: rgba(128, 128, 128, 0.1);
+        }
+
+        &.active {
+            border-color: rgba(96, 165, 250, 0.8);
+            background: rgba(59, 130, 246, 0.18);
+        }
+
+        .bc-source-tab-name {
+            font-weight: 600;
+        }
+
+        .bc-source-tab-edit,
+        .bc-source-tab-del {
+            border: none;
+            background: transparent;
+            color: inherit;
+            opacity: 0.4;
+            cursor: pointer;
+            padding: 0 2px;
+            font-size: 13px;
+            line-height: 1;
+
+            &:hover {
+                opacity: 1;
+                color: rgb(220, 38, 38);
+            }
+        }
+    }
+}
+
+// Tabby's host stylesheet styles every <button> (background, border, shadow,
+// padding). Our inline icon/link buttons must opt out explicitly — otherwise
+// they render as white boxes (seen with the source-tab edit/delete buttons).
+.bc-sync button:not(.btn):not(.form-control) {
+    background: transparent;
+    border: none;
+    box-shadow: none;
+    color: inherit;
+    font: inherit;
+    padding: 0;
+    margin: 0;
+    line-height: inherit;
+    appearance: none;
+    -webkit-appearance: none;
 }
