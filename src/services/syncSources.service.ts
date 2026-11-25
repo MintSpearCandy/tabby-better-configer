@@ -4,50 +4,71 @@ import * as crypto from 'crypto'
 import * as yaml from 'js-yaml'
 
 import { ConfigMapService } from './configMap.service'
-import { PackageIOService, ConfigPackage, ValidationReport, ApplyResult } from './packageIO.service'
-import { GitSyncService, GitSyncTarget, RemoteFile, PushRejectedError } from './gitSync.service'
+import { PackageIOService, ConfigPackage, ApplyResult } from './packageIO.service'
+import { GitSyncService, GitSyncTarget, HistoryEntry, PushRejectedError } from './gitSync.service'
+import { PackageMergeService, MergeDraft } from './packageMerge.service'
 import { SyncLogService } from './syncLog.service'
 
 export const VAULT_TOKEN_TYPE = 'better-configer-git-token'
 
-/** One git sync source = repo + branch + package file + apply mode.
- *  Persisted under `betterConfiger.sync.sources` in config.yaml — EXCEPT the
- *  token, which goes to the Tabby vault when available (tokenPlain is the
- *  plaintext fallback for vault-less setups). */
+/** One git sync source = repo + upstream branch + local branch + package
+ *  file + apply mode. Persisted under `betterConfiger.sync.sources` — EXCEPT
+ *  the token, which goes to the Tabby vault when available (tokenPlain is
+ *  the plaintext fallback for vault-less setups). */
 export interface SyncSource extends GitSyncTarget {
     name: string
     mode: 'merge' | 'replace'
-    /** push: include vault/encrypted/configSync sections in the package */
+    /** push/commit: include vault/encrypted/configSync sections */
     includeSensitive: boolean
-    /** set when the token was stored in the vault (informational) */
     tokenInVault?: boolean
     tokenPlain?: string
     lastPull?: { at: string, oid: string, message: string }
     lastPush?: { at: string, oid: string }
 }
 
-export interface PullPreview {
-    pkg: ConfigPackage
-    report: ValidationReport
-    remote: RemoteFile
+/** Everything the workspace panel renders for one source. */
+export interface WorkspaceState {
+    localBranch: string
+    localBranches: string[]
+    remoteBranches: string[]
+    ahead: number
+    behind: number
+    /** package at the local branch head; null = unborn branch */
+    headPackage: ConfigPackage | null
+    history: HistoryEntry[]
+    /** sections where the live config differs from the head package */
+    configDiff: string[]
 }
 
-/** Sections never pushed: plugin-self configuration (toggles, source list,
- *  token fallbacks) is machine-local by design. */
-const NEVER_PUSH_KEYS = ['version', 'betterConfiger']
+/** Merge in progress — handed to the UI when conflicts need resolutions. */
+export interface MergeUiDraft extends MergeDraft {
+    baseMissing: boolean
+}
+
+/** Sections never committed: plugin-self configuration (toggles, source
+ *  list, token fallbacks) is machine-local by design. */
+const NEVER_COMMIT_KEYS = ['version', 'betterConfiger']
 
 /**
- * Orchestrates git config sync: source CRUD, token storage (vault-first),
- * and pull/push built on PackageIOService's existing package semantics
- * (validate → confirm → apply with merge/replace + id-union for arrays).
+ * Workspace orchestration over the git engine: the IDE-model flow
+ * config ⇄ local branch ⇄ remote, with semantic three-way merges.
  */
 @Injectable({ providedIn: 'root' })
 export class SyncSourcesService {
+    /** Workspace UI state kept HERE (root singleton) so switching sub-tabs —
+     *  which destroys/recreates the sync panel — keeps workspaces expanded
+     *  with their loaded state. */
+    wsCache = new Map<string, WorkspaceState>()
+    expandedWsId: string | null = null
+    historyFor: string | null = null
+
     constructor (
         private config: ConfigService,
         private map: ConfigMapService,
         private io: PackageIOService,
-        private git: GitSyncService,
+        /** public: the git browser component drives the engine directly */
+        public readonly git: GitSyncService,
+        private mergeSvc: PackageMergeService,
         private vault: VaultService,
         private syncLog: SyncLogService,
     ) { }
@@ -59,6 +80,8 @@ export class SyncSourcesService {
             return false
         }
     }
+
+    // -------------------------------------------------------------- CRUD ----
 
     sources (): SyncSource[] {
         const raw = this.map.rawStore()
@@ -79,14 +102,6 @@ export class SyncSourcesService {
         return this.map.rawStore()?.betterConfiger?.sync?.logDebug === true
     }
 
-    async setLogDebug (value: boolean): Promise<void> {
-        const raw = this.map.rawStore()
-        raw.betterConfiger = raw.betterConfiger ?? {}
-        raw.betterConfiger.sync = raw.betterConfiger.sync ?? {}
-        raw.betterConfiger.sync.logDebug = value
-        await this.config.writeRaw(yaml.dump(raw))
-    }
-
     /** Empty string clears the override (env vars take over again). */
     async setProxyUrl (value: string): Promise<void> {
         const raw = this.map.rawStore()
@@ -101,11 +116,19 @@ export class SyncSourcesService {
         this.syncLog.info('source', value.trim() ? `proxy set to ${value.trim()}` : 'proxy cleared')
     }
 
+    async setLogDebug (value: boolean): Promise<void> {
+        const raw = this.map.rawStore()
+        raw.betterConfiger = raw.betterConfiger ?? {}
+        raw.betterConfiger.sync = raw.betterConfiger.sync ?? {}
+        raw.betterConfiger.sync.logDebug = value
+        await this.config.writeRaw(yaml.dump(raw))
+    }
+
     async saveSource (src: SyncSource): Promise<void> {
         const sources = this.sources().filter(s => s.id !== src.id)
         sources.push(src)
-        await this.persist(sources)
-        this.syncLog.info('source', `saved source "${src.name}"`, `${src.url} @ ${src.branch} : ${src.path} (mode: ${src.mode})`)
+        await this.persistSources(sources)
+        this.syncLog.info('source', `saved source "${src.name}"`, `${src.url} — local ${src.localBranch || src.branch} → origin/${src.branch} : ${src.path}`)
     }
 
     async deleteSource (id: string): Promise<void> {
@@ -113,8 +136,6 @@ export class SyncSourcesService {
         await this.setToken({ ...src, id } as SyncSource, null)
             .catch(() => null)
         this.git.dropCache(id)
-        // single read-modify-write: re-reading inside persist() could race a
-        // concurrent lastPull/lastPush write and resurrect the source
         const raw = this.map.rawStore()
         const remaining = (raw?.betterConfiger?.sync?.sources ?? []).filter((s: SyncSource) => s.id !== id)
         raw.betterConfiger = raw.betterConfiger ?? {}
@@ -161,93 +182,248 @@ export class SyncSourcesService {
         }
     }
 
-    // -------------------------------------------------------- operations ----
+    // ------------------------------------------------------- workspaces ----
 
-    async listBranches (source: SyncSource): Promise<string[]> {
-        const token = await this.getToken(source)
-        return this.git.listBranches(source.url, token)
+    /** The current config serialized as a package (sections excluded from
+     *  commits: plugin-self + sensitive unless the source opts in). */
+    currentPackage (source: SyncSource): ConfigPackage {
+        const json = this.io.serializePackage('full', this.commitKeys(source), source.includeSensitive)
+        return JSON.parse(json)
     }
 
-    /** Fetch + read + validate, WITHOUT applying anything (confirm step). */
-    async previewPull (source: SyncSource): Promise<PullPreview> {
-        const token = await this.getToken(source)
-        const remote = await this.git.readFile(source, token)
-        let pkg: ConfigPackage
-        try {
-            pkg = JSON.parse(remote.content)
-        } catch (e: any) {
-            throw new Error(`${source.path} on ${source.branch} is not valid JSON: ${e?.message ?? e}`)
+    commitKeys (source: SyncSource): string[] {
+        const raw = this.map.rawStore()
+        return Object.keys(raw).filter(k => !NEVER_COMMIT_KEYS.includes(k))
+    }
+
+    /** Load everything the workspace shows. Local-only (no network) EXCEPT
+     *  the first open of a fresh source: no cached remote refs + unborn local
+     *  branch → one fetch + adopt, so the workspace opens on a real head
+     *  instead of an empty unborn branch (IDE-like first-open experience). */
+    async loadWorkspace (source: SyncSource): Promise<WorkspaceState> {
+        const local = this.git.localBranchOf(source)
+        const localBranches = await this.git.listLocalBranches(source)
+        if (!localBranches.includes(local)) {
+            await this.git.createBranch(source, local, `origin/${source.branch}`)
         }
-        const report = this.io.validatePackage(pkg)
-        this.syncLog.info('pull', `validated package from "${source.name}" (${report.issues.length} notes)`,
-            report.issues.map(i => `[${i.level}] ${i.message}`).join('\n') || undefined)
-        return { pkg, report, remote }
+        let headRaw = await this.git.readPackageAt(source, local)
+        let remoteBranches = await this.git.listRemoteBranches(source)
+        if (!headRaw && !remoteBranches.length) {
+            // fresh cache — bootstrap: fetch + adopt the upstream head
+            await this.fetchRefs(source).catch(() => null)
+            remoteBranches = await this.git.listRemoteBranches(source)
+            if (remoteBranches.includes(source.branch)) {
+                await this.mergeInto(source, `origin/${source.branch}`).catch(() => null)
+                headRaw = await this.git.readPackageAt(source, local)
+            }
+        }
+        const headPackage = headRaw ? this.parsePackage(headRaw.content, 'local branch head') : null
+        const aheadBehind = await this.git.aheadBehind(source)
+        remoteBranches = await this.git.listRemoteBranches(source)
+        const history = await this.git.history(source)
+        const configDiff = this.diffAgainstHead(source, headPackage)
+        return {
+            localBranch: local,
+            localBranches: await this.git.listLocalBranches(source),
+            remoteBranches,
+            ahead: aheadBehind.ahead,
+            behind: aheadBehind.behind,
+            headPackage,
+            history,
+            configDiff,
+        }
     }
 
-    async applyPull (source: SyncSource, preview: PullPreview, mode: 'merge' | 'replace'): Promise<ApplyResult> {
-        const result = await this.io.applyPackage(preview.pkg, { mode, keys: null })
-        const stats = result.profilesStats
-            ? ` — profiles: +${result.profilesStats.added}, ~${result.profilesStats.overwritten}` : ''
-        this.syncLog.success('pull', `applied package (${mode})${stats}`,
-            Object.keys(preview.pkg.modules ?? {}).join(', '))
-        // stamp lastPull on a FRESH read of the store: the package apply just
-        // rewrote it wholesale, and any older snapshot would resurrect
-        // concurrently-deleted sources (lost update)
-        const sources = this.sources()
-        const stored = sources.find(s => s.id === source.id)
-        if (stored) {
-            stored.lastPull = {
-                at: new Date().toISOString(),
-                oid: preview.remote.oid,
-                message: preview.remote.message,
+    /** Sections whose value in the live config differs from the branch head
+     *  package (empty = nothing to commit / nothing to apply). */
+    diffAgainstHead (source: SyncSource, headPackage: ConfigPackage | null): string[] {
+        const current = this.currentPackage(source)
+        const headModules = headPackage?.modules ?? {}
+        const changed: string[] = []
+        for (const section of new Set([...Object.keys(current.modules ?? {}), ...Object.keys(headModules)])) {
+            if (JSON.stringify((current.modules ?? {})[section]) !== JSON.stringify(headModules[section])) {
+                changed.push(section)
             }
-            await this.persist(sources)
+        }
+        return changed.sort()
+    }
+
+    /** Snapshot the current config onto the local branch. */
+    async commitFromConfig (source: SyncSource, message: string): Promise<{ oid: string, sections: number }> {
+        const pkg = this.currentPackage(source)
+        const head = await this.git.branchHeadOid(source, this.git.localBranchOf(source))
+        const oid = await this.git.commitPackage(
+            source,
+            JSON.stringify(pkg, null, 2) + '\n',
+            message,
+            head ? [head] : [],
+        )
+        this.syncLog.success('commit', `committed ${Object.keys(pkg.modules ?? {}).length} sections (${oid.slice(0, 8)})`, message.split('\n')[0])
+        return { oid, sections: Object.keys(pkg.modules ?? {}).length }
+    }
+
+    /** Fetch all remote heads (updates ahead/behind and merge targets). */
+    async fetchRefs (source: SyncSource): Promise<string[]> {
+        const token = await this.getToken(source)
+        return this.git.fetchAll(source, token)
+    }
+
+    /** Three-way merge of `fromRef` into the current local branch.
+     *  Clean merge → merge commit right away; conflicts → MergeUiDraft for
+     *  the UI to resolve (resolveMerge commits). */
+    async mergeInto (source: SyncSource, fromRef: string): Promise<MergeUiDraft | { committed: true, oid: string }> {
+        const local = this.git.localBranchOf(source)
+        const oursOid = await this.git.branchHeadOid(source, local)
+        const theirsRaw = await this.git.readPackageAt(source, fromRef)
+        if (!theirsRaw) {
+            throw new Error(`no package at ${fromRef} (branch missing or file not committed)`)
+        }
+        const theirs = this.parsePackage(theirsRaw.content, fromRef)
+
+        if (!oursOid) {
+            // unborn local branch: adopt theirs wholesale as the first commit
+            const oid = await this.git.commitPackage(
+                source, theirsRaw.content, `Adopt ${fromRef} into ${local}`, [theirsRaw.commitOid])
+            this.syncLog.success('merge', `adopted ${fromRef} into ${local} (${oid.slice(0, 8)})`)
+            return { committed: true, oid }
+        }
+
+        const baseOid = await this.git.mergeBase(source, oursOid, theirsRaw.commitOid)
+        const baseRaw = baseOid ? await this.git.readPackageAt(source, baseOid) : null
+        const base = baseRaw ? this.parsePackage(baseRaw.content, 'merge base') : null
+        const oursRaw = await this.git.readPackageAt(source, local)
+        const ours = this.parsePackage(oursRaw?.content ?? '{}', 'local branch head')
+
+        const outcome = this.mergeSvc.merge(ours, theirs, base)
+        if (!outcome.conflicts.length) {
+            const oid = await this.git.commitPackage(
+                source,
+                JSON.stringify(outcome.merged, null, 2) + '\n',
+                `Merge ${fromRef} into ${local}`,
+                [oursOid, theirsRaw.commitOid],
+            )
+            const s = outcome.stats
+            this.syncLog.success('merge', `merged ${fromRef} into ${local} (${oid.slice(0, 8)})`,
+                `ours ${s.tookOurs}, theirs ${s.tookTheirs}, deep ${s.deepMerged}, id-union ${s.idUnioned}`)
+            return { committed: true, oid }
+        }
+        this.syncLog.info('merge', `merge of ${fromRef} needs ${outcome.conflicts.length} resolution(s)`,
+            outcome.conflicts.map(c => `${c.section}: ours=${JSON.stringify(c.ours)?.slice(0, 80)} theirs=${JSON.stringify(c.theirs)?.slice(0, 80)}`).join('\n')
+            + (base ? `\n(base: ${Object.keys(base.modules ?? {}).join(', ')})` : '\n(no base)'))
+        return {
+            merged: outcome.merged,
+            conflicts: outcome.conflicts,
+            stats: outcome.stats,
+            oursOid,
+            theirsOid: theirsRaw.commitOid,
+            fromRef,
+            baseMissing: !base,
+        }
+    }
+
+    /** Apply the user's per-section choices and write the merge commit. */
+    async resolveMerge (source: SyncSource, draft: MergeUiDraft, choices: Record<string, 'ours' | 'theirs'>): Promise<{ oid: string }> {
+        const local = this.git.localBranchOf(source)
+        for (const [section, side] of Object.entries(choices)) {
+            this.mergeSvc.resolveSection(draft, section, side)
+        }
+        if (draft.conflicts.length) {
+            throw new Error(`unresolved sections: ${draft.conflicts.map(c => c.section).join(', ')}`)
+        }
+        const oid = await this.git.commitPackage(
+            source,
+            JSON.stringify(draft.merged, null, 2) + '\n',
+            `Merge ${draft.fromRef} into ${local}`,
+            [draft.oursOid, draft.theirsOid],
+        )
+        this.syncLog.success('merge', `merge committed (${oid.slice(0, 8)}) after conflict resolution`)
+        return { oid }
+    }
+
+    /** Apply the local branch head package onto the live config. */
+    async applyToConfig (source: SyncSource, mode: 'merge' | 'replace'): Promise<ApplyResult> {
+        const local = this.git.localBranchOf(source)
+        const headRaw = await this.git.readPackageAt(source, local)
+        if (!headRaw) {
+            throw new Error(`local branch "${local}" has no package to apply`)
+        }
+        const pkg = this.parsePackage(headRaw.content, local)
+        const report = this.io.validatePackage(pkg)
+        if (!report.ok) {
+            throw new Error(`package at ${local} failed validation: ${report.issues.map(i => i.message).join('; ')}`)
+        }
+        const result = await this.io.applyPackage(pkg, { mode, keys: null })
+        this.syncLog.success('apply', `applied ${local} to config (${mode})`,
+            Object.keys(pkg.modules ?? {}).join(', '))
+        // stamp lastPull in a single read-modify-write
+        const raw = this.map.rawStore()
+        const stored = (raw?.betterConfiger?.sync?.sources ?? []).find((s: SyncSource) => s.id === source.id)
+        if (stored) {
+            stored.lastPull = { at: new Date().toISOString(), oid: headRaw.commitOid, message: headRaw.message }
+            await this.config.writeRaw(yaml.dump(raw))
         }
         return result
     }
 
-    /** Package the current config for pushing (sections list is informational). */
-    buildPushPayload (source: SyncSource): { json: string, sections: string[], excluded: string[] } {
-        const raw = this.map.rawStore()
-        const keys = Object.keys(raw).filter(k => !NEVER_PUSH_KEYS.includes(k))
-        const excluded = source.includeSensitive
-            ? []
-            : keys.filter(k => ['vault', 'encrypted', 'configSync'].includes(k))
-        const sections = keys.filter(k => !excluded.includes(k))
-        const json = this.io.serializePackage('full', sections, source.includeSensitive)
-        return { json, sections, excluded }
-    }
-
-    async push (source: SyncSource, force = false): Promise<{ oid: string, sections: number }> {
-        const { json, sections } = this.buildPushPayload(source)
+    /** Push the local branch onto the upstream remote branch. */
+    async pushWorkspace (source: SyncSource, force = false): Promise<{ oid: string, ahead: number }> {
         const token = await this.getToken(source)
-        const message = `BetterConfiger: update config package (${sections.length} sections)\n\nPushed from Tabby at ${new Date().toISOString()}`
-        const { oid } = await this.git.writeFile(source, json, message, token, force)
-        if (force) {
-            this.syncLog.success('push', `force-pushed ${sections.length} sections (${oid.slice(0, 8)})`)
-        }
-        // one read, one write — persist(this.sources()) would re-read the
-        // store from disk and silently drop the lastPush just set
-        const sources = this.sources()
-        const stored = sources.find(s => s.id === source.id)
+        const oid = await this.git.pushBranch(source, token, force)
+        const raw = this.map.rawStore()
+        const stored = (raw?.betterConfiger?.sync?.sources ?? []).find((s: SyncSource) => s.id === source.id)
         if (stored) {
             stored.lastPush = { at: new Date().toISOString(), oid }
-            await this.persist(sources)
+            await this.config.writeRaw(yaml.dump(raw))
         }
-        return { oid, sections: sections.length }
+        return { oid, ahead: 0 }
     }
 
-    /** Like push(), but never applies a force flag — used to surface
-     *  PushRejectedError to the caller for an explicit overwrite choice. */
-    async pushIfFastForward (source: SyncSource): Promise<{ oid: string, sections: number }> {
-        return this.push(source, false)
+    /** One-click: fetch → merge origin/upstream → apply to config.
+     *  Conflicts abort with a pointer to the explicit Merge flow. */
+    async updateAndApply (source: SyncSource): Promise<ApplyResult | null> {
+        await this.fetchRefs(source)
+        const outcome = await this.mergeInto(source, `origin/${source.branch}`)
+        if ('conflicts' in outcome && outcome.conflicts?.length) {
+            throw new Error(`merge from origin/${source.branch} has conflicts — resolve them via Merge`)
+        }
+        return this.applyToConfig(source, 'merge')
     }
 
-    async pushForce (source: SyncSource): Promise<{ oid: string, sections: number }> {
-        return this.push(source, true)
+    // ------------------------------------------------------------ branches ----
+
+    async createBranch (source: SyncSource, name: string, fromRef?: string): Promise<void> {
+        await this.git.createBranch(source, name, fromRef)
     }
 
-    private async persist (sources: SyncSource[]): Promise<void> {
+    async switchBranch (source: SyncSource, name: string): Promise<void> {
+        const raw = this.map.rawStore()
+        const stored = (raw?.betterConfiger?.sync?.sources ?? []).find((s: SyncSource) => s.id === source.id)
+        if (stored) {
+            stored.localBranch = name
+            await this.config.writeRaw(yaml.dump(raw))
+        }
+        await this.git.switchBranch({ ...source, localBranch: name }, name)
+    }
+
+    async deleteBranch (source: SyncSource, name: string): Promise<void> {
+        await this.git.deleteBranch(source, name)
+    }
+
+    async listServerBranches (source: SyncSource): Promise<string[]> {
+        const token = await this.getToken(source)
+        return this.git.listServerBranches(source.url, token)
+    }
+
+    // ------------------------------------------------------------- utils ----
+
+    private parsePackage (content: string | undefined, what: string): ConfigPackage {
+        if (!content) {
+            throw new Error(`no package content at ${what}`)
+        }
+        return JSON.parse(content)
+    }
+
+    private async persistSources (sources: SyncSource[]): Promise<void> {
         const raw = this.map.rawStore()
         raw.betterConfiger = raw.betterConfiger ?? {}
         raw.betterConfiger.sync = raw.betterConfiger.sync ?? {}

@@ -8,6 +8,10 @@ export class BetterConfigerConfigProvider extends ConfigProvider {
             // Dogfooding: this very section shows up in the Config Manager's
             // third-party group. Keep the surface tiny for now.
             confirmSensitiveExport: true,
+            /** live config sync across same-OS Tabby windows (config.yaml
+             *  watcher — keeps session/profile ordering consistent without
+             *  restarting each window); see configWatch.service */
+            crossWindowSync: true,
             /** hide Tabby's native settings pills — the new Config file & sync
              *  tab replaces their content (CSS injection, see nativeTabs.service) */
             hideNativeConfigFileTab: false,
