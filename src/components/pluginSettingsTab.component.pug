@@ -10,3 +10,11 @@
                 (ngModelChange)='setHideNativeConfigSync($event)')
             span {{ t.t("betterConfiger.native.hideConfigSync") }}
     .bc-native-hint {{ t.t("betterConfiger.native.hint") }}
+
+    h4 {{ t.t("betterConfiger.xwin.title") }}
+    .bc-toggle-row
+        label.bc-check
+            input(type='checkbox', [ngModel]='crossWindowSync',
+                (ngModelChange)='setCrossWindowSync($event)')
+            span {{ t.t("betterConfiger.xwin.sync") }}
+    .bc-native-hint {{ t.t("betterConfiger.xwin.hint") }}

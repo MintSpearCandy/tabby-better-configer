@@ -18,6 +18,7 @@ import { BetterConfigerTranslator } from '../i18n'
 export class PluginSettingsTabComponent extends BaseComponent implements OnInit {
     hideNativeConfigFile = false
     hideNativeConfigSync = false
+    crossWindowSync = true
 
     constructor (
         private config: ConfigService,
@@ -43,6 +44,11 @@ export class PluginSettingsTabComponent extends BaseComponent implements OnInit 
         await this.writeToggle('hideNativeConfigSyncTab', value)
     }
 
+    async setCrossWindowSync (value: boolean): Promise<void> {
+        this.crossWindowSync = value
+        await this.writeToggle('crossWindowSync', value)
+    }
+
     private async writeToggle (key: string, value: boolean): Promise<void> {
         try {
             const raw = this.map.rawStore()
@@ -58,5 +64,6 @@ export class PluginSettingsTabComponent extends BaseComponent implements OnInit 
         const section = this.map.rawStore().betterConfiger ?? {}
         this.hideNativeConfigFile = section['hideNativeConfigFileTab'] === true
         this.hideNativeConfigSync = section['hideNativeConfigSyncTab'] === true
+        this.crossWindowSync = section['crossWindowSync'] !== false
     }
 }
